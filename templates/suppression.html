@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}Unsubscribes{% endblock %}
+{% block content %}
+
+<div class="page-head">
+  <div>
+    <div class="eyebrow">Do-not-email list</div>
+    <h1>Unsubscribes</h1>
+  </div>
+</div>
+
+<div class="two-col">
+  <div class="col-main">
+    <div class="card">
+      <div class="card-title">Add addresses</div>
+      <p class="hint">When someone replies “unsubscribe” (or asks to stop receiving emails), paste their
+      address here. They are skipped in every future campaign — even if they appear in an uploaded list.
+      Honoring these requests is required by CAN-SPAM.</p>
+      <form method="post">
+        <textarea name="emails" rows="4" placeholder="one@example.com, two@example.com&#10;three@example.com"></textarea>
+        <div class="form-actions">
+          <button class="btn primary" type="submit">Add to do-not-email list</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="col-side">
+    <div class="card">
+      <div class="card-title">Current list <span class="hint-inline">({{ entries | length }})</span></div>
+      {% if entries %}
+      <div class="recip-scroll">
+        <table class="mini">
+          <tbody>
+          {% for e in entries %}
+            <tr>
+              <td>{{ e.email }}</td>
+              <td class="dim mono">{{ e.added_at[:10] if e.added_at }}</td>
+              <td>
+                <form method="post" action="{{ url_for('unsubscribe_remove') }}"
+                      onsubmit="return confirm('Remove {{ e.email }} from the do-not-email list?');">
+                  <input type="hidden" name="email" value="{{ e.email }}">
+                  <button class="link-btn" type="submit">remove</button>
+                </form>
+              </td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <p class="hint">No unsubscribed contacts yet.</p>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+{% endblock %}

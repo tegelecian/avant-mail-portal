@@ -1,0 +1,5 @@
+.env
+data/
+drafts/
+__pycache__/
+*.pyc

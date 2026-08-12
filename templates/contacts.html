@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}Contacts{% endblock %}
+{% block content %}
+
+<div class="page-head">
+  <div>
+    <div class="eyebrow">Saved lists</div>
+    <h1>Contacts</h1>
+  </div>
+</div>
+
+<div class="two-col">
+  <div class="col-main">
+    <div class="card">
+      <div class="card-title">Upload a contact list</div>
+      <p class="hint">Add a CSV or Excel file to a group. The portal validates every address,
+      removes duplicates, and merges with what's already in the group — uploading the same
+      list twice never creates doubles. Anyone on the unsubscribe list is stored but
+      automatically excluded whenever the group is used in a campaign.</p>
+      <form method="post" enctype="multipart/form-data">
+        <label for="cfile">File</label>
+        <input id="cfile" name="file" type="file" accept=".csv,.tsv,.txt,.xlsx,.xlsm" required>
+        <label>Add to</label>
+        {% if groups %}
+        <select name="group_id" class="select">
+          {% for g in groups %}<option value="{{ g.id }}">{{ g.name }} ({{ g.n }})</option>{% endfor %}
+        </select>
+        <label for="ng">…or create a new group <span class="hint-inline">(leave blank to use the one selected above)</span></label>
+        {% else %}
+        <label for="ng" style="margin-top:0;">New group name</label>
+        {% endif %}
+        <input id="ng" name="new_group" type="text" placeholder="Gas &amp; c-store prospects">
+        <div class="form-actions">
+          <button class="btn primary" type="submit">Upload &amp; merge</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="col-side">
+    <div class="card">
+      <div class="card-title">Your groups</div>
+      {% if groups %}
+      <table class="mini">
+        <tbody>
+        {% for g in groups %}
+          <tr>
+            <td><strong>{{ g.name }}</strong><div class="row-sub mono">{{ g.n }} contacts</div></td>
+            <td style="text-align:right; white-space:nowrap;">
+              <a class="btn ghost sm" href="{{ url_for('contacts_csv', gid=g.id) }}">CSV</a>
+              <form method="post" action="{{ url_for('contacts_delete', gid=g.id) }}" style="display:inline;"
+                    onsubmit="return confirm('Delete the group {{ g.name }} and its {{ g.n }} contacts?');">
+                <button class="link-btn" type="submit">delete</button>
+              </form>
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <p class="hint">No groups yet. Upload your first list to create one — then campaigns
+      can reuse it with one click.</p>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+{% endblock %}

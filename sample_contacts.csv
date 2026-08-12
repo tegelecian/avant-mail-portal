@@ -1,0 +1,8 @@
+Name,Email,Company
+Gill Berdin,gill@example.com,Avant Real Estate
+Maria Lopez,maria.lopez@example.com,Lopez Fuel Group
+JAMES CHEN,jchen@example.com,Pacific C-Store Partners
+Sarah O'Neil,soneil@example.com,
+Robert Vance,rvance@example.com,Vance Development
+maria.lopez@example.com is a duplicate,maria.lopez@example.com,Dup Co
+Bad Row,not-an-email,

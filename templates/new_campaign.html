@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}New campaign{% endblock %}
+{% block content %}
+
+<div class="page-head">
+  <div>
+    <div class="eyebrow">Step 1 of 2 — compose</div>
+    <h1>New campaign</h1>
+  </div>
+</div>
+
+<form method="post" enctype="multipart/form-data" class="card form-card">
+
+  <label for="name">Internal campaign name <span class="hint-inline">(only your team sees this)</span></label>
+  <input id="name" name="name" type="text" placeholder="Wildomar ground lease — gas &amp; c-store blast">
+
+  <label>Who is this going to?</label>
+  <label class="check"><input type="radio" name="audience_source" value="file" checked onclick="document.getElementById('src-file').hidden=false;document.getElementById('src-group').hidden=true;"> Upload a contact file <span class="hint-inline">CSV or Excel with columns like <b>Name, Email</b> (Company optional)</span></label>
+  <label class="check"><input type="radio" name="audience_source" value="group" {% if not groups %}disabled{% endif %} onclick="document.getElementById('src-file').hidden=true;document.getElementById('src-group').hidden=false;"> Use a saved contact group {% if not groups %}<span class="hint-inline">(none yet — add one on the Contacts page)</span>{% endif %}</label>
+  <div id="src-file">
+    <input id="contacts" name="contacts" type="file" accept=".csv,.tsv,.txt,.xlsx,.xlsm">
+  </div>
+  <div id="src-group" hidden>
+    <select name="group_id" class="select">
+      {% for g in groups %}<option value="{{ g.id }}">{{ g.name }} — {{ g.n }} contacts</option>{% endfor %}
+    </select>
+  </div>
+
+  <label for="subject">Subject line</label>
+  <input id="subject" name="subject" type="text" required
+         placeholder="±1.07 AC signalized hard corner — 33625 Mission Trail, Wildomar">
+
+  <label for="body">Email body</label>
+  <div class="token-help">
+    Merge fields — the portal swaps these per contact:
+    <span class="token">{% raw %}{{FirstName}}{% endraw %}</span>
+    <span class="token">{% raw %}{{Name}}{% endraw %}</span>
+    <span class="token">{% raw %}{{Company}}{% endraw %}</span>
+    <span class="token">{% raw %}{{Email}}{% endraw %}</span>
+  </div>
+  <textarea id="body" name="body" rows="14" required
+placeholder="Hello {% raw %}{{FirstName}}{% endraw %},
+
+The property at 33625 Mission Trail, Wildomar, CA represents a rare, high-visibility, signalized hard-corner opportunity...
+
+* Adjacent to proposed 1,000,000+ SF Amazon Distribution Center
+* Surrounded by massive housing growth
+
+I've attached our current flyer for your reference."></textarea>
+  <label class="check"><input type="checkbox" name="is_html"> Body is HTML <span class="hint-inline">(leave off for normal text — lines starting with * become bullets)</span></label>
+
+  <label for="attachments">Attachments <span class="hint-inline">flyers, one-pagers — 3&nbsp;MB total max; link to big files instead</span></label>
+  <input id="attachments" name="attachments" type="file" multiple>
+
+  <label class="check big-gap"><input type="checkbox" name="include_footer" checked> Add the compliance footer <span class="hint-inline">(company address + unsubscribe line — required for bulk email under CAN-SPAM)</span></label>
+  <textarea name="footer" rows="3">{{ default_footer }}</textarea>
+
+  <div class="form-actions">
+    <button class="btn primary" type="submit">Load contacts &amp; preview →</button>
+    <span class="hint-inline">Nothing sends yet — the next screen is review, test and launch.</span>
+  </div>
+</form>
+
+{% endblock %}

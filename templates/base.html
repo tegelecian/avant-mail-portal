@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Mail Merge Portal{% endblock %} · Avant Real Estate</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="{{ url_for('dashboard') }}">
+      <span class="brand-mark">AVANT</span>
+      <span class="brand-sub">Mail merge portal</span>
+    </a>
+    <nav class="nav">
+      <a href="{{ url_for('dashboard') }}">Dashboard</a>
+      <a href="{{ url_for('new_campaign') }}">New campaign</a>
+      <a href="{{ url_for('contacts_page') }}">Contacts</a>
+      <a href="{{ url_for('unsubscribes') }}">Unsubscribes</a>
+      <a href="{{ url_for('logout') }}" class="nav-dim">Log out</a>
+    </nav>
+  </div>
+</header>
+
+{% if g_dry_run %}
+<div class="mode-strip">DRY RUN — the portal is in practice mode. No real email is sent.</div>
+{% elif not g_configured %}
+<div class="mode-strip warn">Microsoft 365 is not connected yet — sending is disabled. Fill in the .env file (see README) to go live.</div>
+{% endif %}
+
+<main class="wrap">
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}
+      <div class="flash {{ category }}">{{ message }}</div>
+    {% endfor %}
+  {% endwith %}
+  {% block content %}{% endblock %}
+</main>
+
+<footer class="pagefoot">Sends as <strong>{{ g_sender or "— sender not set —" }}</strong> through Microsoft&nbsp;365 · one personal email per contact · copies appear in Sent Items</footer>
+</body>
+</html>

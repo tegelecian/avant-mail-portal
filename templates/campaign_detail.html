@@ -1,0 +1,186 @@
+{% extends "base.html" %}
+{% block title %}{{ c.name }}{% endblock %}
+{% block content %}
+
+<div class="page-head">
+  <div>
+    <div class="eyebrow">Campaign{% if c.audience %} · {{ c.audience }}{% endif %}</div>
+    <h1>{{ c.name }}</h1>
+  </div>
+  <span class="chip big {{ c.status }}" id="status-chip">{{ c.status }}</span>
+</div>
+
+<div class="two-col">
+
+  <div class="col-main">
+    <div class="card">
+      <div class="card-title">Progress</div>
+      <div class="parcel-bar"><div class="parcel-fill" id="bar" style="width:0%"></div></div>
+      <div class="progress-legend mono" id="legend">loading…</div>
+      <div class="cap-note" id="cap-note" hidden>Daily safety cap reached — sending resumes automatically after midnight.</div>
+      {% if c.status == 'scheduled' %}
+      <div class="cap-note">Scheduled for <strong>{{ c.scheduled_at.replace('T', ' at ') }}</strong>. The portal must be running then.</div>
+      {% endif %}
+
+      <div class="controls">
+        {% if c.status in ('draft', 'paused', 'scheduled') %}
+        <form method="post" action="{{ url_for('launch', campaign_id=c.id) }}"
+              onsubmit="return confirm('Launch this campaign to {{ counts.pending }} contacts?');">
+          <button class="btn primary" type="submit">{{ 'Resume sending' if c.status == 'paused' else 'Launch now' }}</button>
+        </form>
+        {% endif %}
+        {% if c.status == 'sending' %}
+        <form method="post" action="{{ url_for('pause', campaign_id=c.id) }}">
+          <button class="btn" type="submit">Pause</button>
+        </form>
+        {% endif %}
+        {% if c.status in ('draft','sending','paused','scheduled') %}
+        <form method="post" action="{{ url_for('cancel', campaign_id=c.id) }}"
+              onsubmit="return confirm('Cancel this campaign? Contacts not yet emailed will never be sent.');">
+          <button class="btn danger ghost" type="submit">Cancel</button>
+        </form>
+        {% endif %}
+        <a class="btn ghost" href="{{ url_for('results_csv', campaign_id=c.id) }}">Download results CSV</a>
+      </div>
+
+      {% if c.status in ('draft','paused') %}
+      <form method="post" action="{{ url_for('schedule', campaign_id=c.id) }}" class="inline-form" style="margin-top:14px;">
+        <input type="datetime-local" name="scheduled_at" required>
+        <button class="btn" type="submit">Schedule launch</button>
+      </form>
+      {% endif %}
+    </div>
+
+    <div class="card">
+      <div class="card-title">Engagement</div>
+      {% if not tracking %}
+      <p class="hint" style="margin:0 0 10px;">Open &amp; click tracking is off — set
+      <span class="token">PUBLIC_URL</span> in .env to a link recipients can reach (see README
+      §&nbsp;Tracking). Replies are still detected from the mailbox.</p>
+      {% endif %}
+      <div class="stat-row eng-row">
+        <div class="stat"><div class="stat-num mono" id="e-open">{{ counts.opened }}</div><div class="stat-label">Opened</div></div>
+        <div class="stat"><div class="stat-num mono" id="e-click">{{ counts.clicked }}</div><div class="stat-label">Clicked a link</div></div>
+        <div class="stat"><div class="stat-num mono" id="e-reply">{{ counts.replied }}</div><div class="stat-label">Replied</div></div>
+        <div class="stat"><div class="stat-num mono" id="e-bounce">{{ counts.bounced }}</div><div class="stat-label">Bounced</div></div>
+      </div>
+      <div class="controls" style="margin-top:12px;">
+        <form method="post" action="{{ url_for('scan_now', campaign_id=c.id) }}">
+          <button class="btn" type="submit">Check inbox for replies now</button>
+        </form>
+        <span class="hint-inline">Also runs automatically every few minutes. Replies containing
+        "unsubscribe" are added to the do-not-email list for you.</span>
+      </div>
+    </div>
+
+    {% if counts.sent > 0 %}
+    <div class="card">
+      <div class="card-title">Follow up with the quiet ones</div>
+      <p class="hint" style="margin:0 0 6px;">Drafts a new campaign that goes only to contacts
+      from this one who haven't replied (bounces and unsubscribes always excluded). Nothing
+      sends until you review and launch it.</p>
+      <form method="post" action="{{ url_for('create_followup', campaign_id=c.id) }}">
+        <label class="check"><input type="checkbox" name="only_unopened"> …and who never opened it <span class="hint-inline">(needs tracking on)</span></label>
+        <label class="check"><input type="checkbox" name="only_unclicked"> …and who never clicked a link</label>
+        <label for="fu-subject">Follow-up subject</label>
+        <input id="fu-subject" name="subject" type="text" placeholder="Following up: {{ c.subject }}">
+        <label for="fu-body">Follow-up body</label>
+        <textarea id="fu-body" name="body" rows="6" placeholder="Hello {% raw %}{{FirstName}}{% endraw %},
+
+Just circling back on the Wildomar hard-corner site I sent over — happy to share traffic counts, the site plan, or set up a call this week."></textarea>
+        <div class="form-actions">
+          <button class="btn primary" type="submit">Draft follow-up →</button>
+        </div>
+      </form>
+    </div>
+    {% endif %}
+
+    <div class="card">
+      <div class="card-title">Preview — exactly what the first contact receives</div>
+      <div class="mail-preview">
+        <div class="mail-meta">
+          <div><span class="dim">From:</span> {{ g_sender or "(sender not set)" }}</div>
+          <div><span class="dim">To:</span> {{ recipients[0].name if recipients else '' }} &lt;{{ recipients[0].email if recipients else '' }}&gt;</div>
+          <div><span class="dim">Subject:</span> <strong>{{ preview_subject }}</strong></div>
+          {% if attachments %}
+          <div><span class="dim">Attached:</span>
+            {% for a in attachments %}<span class="attach-pill">{{ a.filename }} · {{ (a.size/1024) | round(0) | int }} KB</span>{% endfor %}
+          </div>
+          {% endif %}
+        </div>
+        <div class="mail-body">{{ preview_html | safe }}</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Send yourself a test first</div>
+      <form method="post" action="{{ url_for('send_test', campaign_id=c.id) }}" class="inline-form">
+        <input type="email" name="test_email" placeholder="you@avantrealestate.com" required>
+        <button class="btn" type="submit">Send test email</button>
+      </form>
+      <p class="hint">The test uses the first contact's merge fields and includes all attachments, so you see the real thing.</p>
+    </div>
+  </div>
+
+  <div class="col-side">
+    <div class="card">
+      <div class="card-title">Contact list</div>
+      <ul class="fact-list">
+        <li><span class="mono">{{ counts.total }}</span> contacts loaded</li>
+        {% if stats.duplicates %}<li><span class="mono">{{ stats.duplicates }}</span> duplicates removed</li>{% endif %}
+        {% if stats.invalid %}<li><span class="mono">{{ stats.invalid }}</span> invalid addresses skipped</li>{% endif %}
+        {% if stats.suppressed %}<li><span class="mono">{{ stats.suppressed }}</span> unsubscribed &mdash; excluded</li>{% endif %}
+      </ul>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Recipients {% if counts.total > 200 %}<span class="hint-inline">(first 200 shown)</span>{% endif %}</div>
+      <div class="recip-scroll">
+        <table class="mini">
+          <tbody id="recip-body">
+          {% for r in recipients %}
+            <tr>
+              <td>{{ r.name or '—' }}<div class="row-sub">{{ r.email }}</div></td>
+              <td style="text-align:right; white-space:nowrap;">
+                {% if r.replied_at %}<span class="tag reply">replied</span>
+                {% elif r.clicked_at %}<span class="tag click">clicked</span>
+                {% elif r.opened_at %}<span class="tag open">opened</span>{% endif %}
+                {% if r.bounced %}<span class="tag bounce">bounced</span>{% endif %}
+                <span class="dot {{ r.status }}" title="{{ r.status }}{% if r.error %}: {{ r.error }}{% endif %}"></span>
+              </td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const statusUrl = "{{ url_for('status_json', campaign_id=c.id) }}";
+async function refresh() {
+  try {
+    const r = await fetch(statusUrl);
+    const d = await r.json();
+    const pct = d.counts.total ? Math.round(100 * d.counts.sent / d.counts.total) : 0;
+    document.getElementById('bar').style.width = pct + '%';
+    let legend = `${d.counts.sent} of ${d.counts.total} sent`;
+    if (d.counts.failed) legend += ` · ${d.counts.failed} failed`;
+    if (d.counts.skipped) legend += ` · ${d.counts.skipped} skipped`;
+    if (d.status === 'sending' && d.counts.pending) legend += ` · ~${d.eta_minutes} min remaining`;
+    document.getElementById('legend').textContent = legend;
+    document.getElementById('e-open').textContent = d.counts.opened;
+    document.getElementById('e-click').textContent = d.counts.clicked;
+    document.getElementById('e-reply').textContent = d.counts.replied;
+    document.getElementById('e-bounce').textContent = d.counts.bounced;
+    const chip = document.getElementById('status-chip');
+    chip.textContent = d.status; chip.className = 'chip big ' + d.status;
+    document.getElementById('cap-note').hidden = !(d.cap_reached && d.status === 'sending');
+    if (d.status === 'sending') setTimeout(refresh, 4000); else setTimeout(refresh, 15000);
+  } catch (e) { setTimeout(refresh, 8000); }
+}
+refresh();
+</script>
+
+{% endblock %}

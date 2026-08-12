@@ -1,0 +1,23 @@
+# Render blueprint — demo deployment (dry run: no Microsoft credentials, no
+# real email). The free instance sleeps when idle and its SQLite database is
+# wiped on every restart/redeploy, which is fine for showing the portal.
+services:
+  - type: web
+    name: avant-mail-portal
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --workers 1 --threads 8 --bind 0.0.0.0:$PORT
+    envVars:
+      - key: DRY_RUN
+        value: "true"
+      - key: PORTAL_PASSWORD
+        sync: false # you type the demo password once, in the Render dashboard
+      - key: SENDER_EMAIL
+        value: dberdin@avantrealestate.com
+      - key: SENDER_NAME
+        value: Dan Berdin
+      - key: RATE_PER_MINUTE
+        value: "20"
+      - key: DAILY_SEND_CAP
+        value: "8000"

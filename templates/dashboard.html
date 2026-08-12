@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block content %}
+
+<div class="page-head">
+  <div>
+    <div class="eyebrow">Overview</div>
+    <h1>Campaigns</h1>
+  </div>
+  <a class="btn primary" href="{{ url_for('new_campaign') }}">+ New campaign</a>
+</div>
+
+<div class="stat-row">
+  <div class="stat">
+    <div class="stat-num">{{ today_count }}</div>
+    <div class="stat-label">Emails sent today</div>
+  </div>
+  <div class="stat">
+    <div class="stat-num">{{ daily_cap }}</div>
+    <div class="stat-label">Daily safety cap</div>
+  </div>
+  <div class="stat">
+    <div class="stat-num">{{ rate }}/min</div>
+    <div class="stat-label">Send pace</div>
+  </div>
+  <div class="stat">
+    <div class="stat-num">{{ sup_count }}</div>
+    <div class="stat-label">Unsubscribed contacts</div>
+  </div>
+</div>
+
+<p class="cost-note">Cost: <span class="mono">$0.00</span> per send — emails go out through the broker's own Microsoft 365 mailbox, so there is no per-email charge.</p>
+
+{% if campaigns %}
+<div class="card table-card">
+  <table>
+    <thead>
+      <tr><th>Campaign</th><th>Created</th><th class="th-wide">Progress</th><th>Status</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for c in campaigns %}
+      {% set pct = (100 * c.counts.sent / c.counts.total) | round(0) if c.counts.total else 0 %}
+      <tr>
+        <td>
+          <a class="row-title" href="{{ url_for('campaign_detail', campaign_id=c.id) }}">{{ c.name }}</a>
+          <div class="row-sub">{{ c.subject }}</div>
+        </td>
+        <td class="mono dim">{{ c.created_at[:10] }}</td>
+        <td>
+          <div class="parcel-bar small"><div class="parcel-fill" style="width: {{ pct }}%"></div></div>
+          <div class="row-sub mono">{{ c.counts.sent }} / {{ c.counts.total }} sent{% if c.counts.replied %} · {{ c.counts.replied }} replied{% endif %}{% if c.counts.failed %} · {{ c.counts.failed }} failed{% endif %}</div>
+        </td>
+        <td><span class="chip {{ c.status }}">{{ c.status }}</span></td>
+        <td><a class="btn ghost sm" href="{{ url_for('campaign_detail', campaign_id=c.id) }}">Open</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="card empty">
+  <div class="eyebrow">No campaigns yet</div>
+  <p>Create the first one: upload a contact list, write the email once with
+  <span class="token">{% raw %}{{FirstName}}{% endraw %}</span> where the name should go, attach the flyer, and launch.</p>
+  <a class="btn primary" href="{{ url_for('new_campaign') }}">Create the first campaign</a>
+</div>
+{% endif %}
+
+{% endblock %}
