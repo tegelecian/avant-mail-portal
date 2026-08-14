@@ -16,7 +16,7 @@ services:
       - key: SENDER_EMAIL
         value: dberdin@avantrealestate.com
       - key: SENDER_NAME
-        value: Dan Berdin
+        value: Denise Berdin
       - key: RATE_PER_MINUTE
         value: "20"
       - key: DAILY_SEND_CAP
