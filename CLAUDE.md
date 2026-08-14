@@ -1,4 +1,4 @@
-# Avant Mail Merge Portal
+# Avant Mail Portal
 
 Internal web portal for Avant Real Estate (CRE brokerage, Pomona CA). Brokers
 upload a contact list, write one email with merge fields, attach flyers, and

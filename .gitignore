@@ -3,3 +3,6 @@ data/
 drafts/
 __pycache__/
 *.pyc
+
+# Local Netlify folder
+.netlify

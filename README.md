@@ -1,4 +1,4 @@
-# Avant Mail Merge Portal
+# Avant Mail Portal
 
 An internal web portal for Avant Real Estate: upload a contact list (CSV or
 Excel), write one email with merge fields like `{{FirstName}}`, attach the

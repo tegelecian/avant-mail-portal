@@ -1,5 +1,5 @@
 """
-Avant Mail Merge Portal
+Avant Mail Portal
 -----------------------
 Internal tool: upload a contact list (CSV/XLSX), compose one email with merge
 fields, attach files, and send an individual personalized email to each
@@ -1133,7 +1133,7 @@ start_worker()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8080"))
-    print(f"\n  Avant Mail Merge Portal  →  http://localhost:{port}")
+    print(f"\n  Avant Mail Portal  →  http://localhost:{port}")
     print(f"  Mode: {'DRY RUN (no real email is sent)' if DRY_RUN else 'LIVE via Microsoft 365'}"
           f"   Sender: {SENDER_EMAIL or '(not set)'}\n")
     app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False, threaded=True)
