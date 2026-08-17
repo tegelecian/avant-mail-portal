@@ -2,4 +2,4 @@ flask>=3.0
 msal>=1.28
 requests>=2.31
 openpyxl>=3.1
-gunicorn>=21.2
+gunicorn==23.0.0
