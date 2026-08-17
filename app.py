@@ -58,7 +58,7 @@ CLIENT_SECRET   = os.environ.get("CLIENT_SECRET", "")
 SENDER_EMAIL    = os.environ.get("SENDER_EMAIL", "")
 SENDER_NAME     = os.environ.get("SENDER_NAME", "")
 PORTAL_PASSWORD = os.environ.get("PORTAL_PASSWORD", "changeme")
-DRY_RUN         = os.environ.get("DRY_RUN", "false").lower() in ("1", "true", "yes")
+DRY_RUN         = os.environ.get("DRY_RUN", "true").lower() in ("1", "true", "yes")
 
 # Exchange Online allows ~30 messages/minute and 10,000 recipients/day per
 # mailbox. Defaults stay safely under both.
@@ -376,7 +376,10 @@ def apply_inbox_messages(conn, campaign_id, messages):
 
         if any(b in sender for b in BOUNCE_SENDERS) or \
            any(subject.startswith(b) or b in subject for b in BOUNCE_SUBJECTS):
-            blob = subject + " " + preview
+            # bodyPreview is truncated (~255 chars) and NDRs often bury the
+            # failed address deeper, so search the full body too when present.
+            body = (((m.get("body") or {}).get("content")) or "").lower()
+            blob = subject + " " + preview + " " + body
             for email, r in recips.items():
                 if email in blob and not r.get("bounced"):
                     conn.execute("UPDATE recipients SET bounced=1 WHERE id=?", (r["id"],))
@@ -420,7 +423,7 @@ def scan_replies(campaign_id):
         return False, f"Auth error: {e}"
     url = (f"https://graph.microsoft.com/v1.0/users/{SENDER_EMAIL}/messages"
            f"?$filter=receivedDateTime ge {since}Z"
-           "&$select=from,subject,bodyPreview,receivedDateTime"
+           "&$select=from,subject,bodyPreview,body,receivedDateTime"
            "&$orderby=receivedDateTime desc&$top=50")
     messages, pages = [], 0
     while url and pages < 6:
@@ -470,6 +473,9 @@ def _rows_from_upload(file_storage):
 
 def parse_contacts(file_storage, suppressed):
     """Return (recipients, stats). Flexible header detection, dedupe, validate."""
+    if (file_storage.filename or "").lower().endswith(".xls"):
+        return [], {"error": "That's an old-format Excel file (.xls). Open it in Excel "
+                             "and save it as .xlsx or CSV, then upload again."}
     rows = list(_rows_from_upload(file_storage))
     if not rows:
         return [], {"error": "The file is empty."}
@@ -805,24 +811,25 @@ def new_campaign():
 
     campaign_id = uuid.uuid4().hex[:12]
 
-    # Store attachments, enforcing the Graph size ceiling.
-    attach_rows, total_bytes = [], 0
+    # Store attachments, enforcing the Graph size ceiling (check before writing
+    # anything to disk so a rejected upload leaves no orphan files behind).
     files = [f for f in request.files.getlist("attachments") if f and f.filename]
+    blobs = [(f, f.read()) for f in files]
+    total_bytes = sum(len(b) for _, b in blobs)
+    if total_bytes > MAX_ATTACH_BYTES:
+        flash(f"Attachments total {total_bytes/1024/1024:.1f} MB — the limit per email is "
+              f"{MAX_ATTACH_BYTES/1024/1024:.0f} MB. Host large flyers online and link to "
+              "them instead (better for spam filters too).", "error")
+        return back()
+    attach_rows = []
     camp_dir = os.path.join(UPLOAD_DIR, campaign_id)
     os.makedirs(camp_dir, exist_ok=True)
-    for f in files:
-        blob = f.read()
-        total_bytes += len(blob)
+    for f, blob in blobs:
         safe = re.sub(r"[^A-Za-z0-9. _()-]", "_", os.path.basename(f.filename))
         path = os.path.join(camp_dir, safe)
         with open(path, "wb") as out:
             out.write(blob)
         attach_rows.append((campaign_id, safe, path, len(blob)))
-    if total_bytes > MAX_ATTACH_BYTES:
-        flash(f"Attachments total {total_bytes/1024/1024:.1f} MB — the limit per email is "
-              f"{MAX_ATTACH_BYTES/1024/1024:.0f} MB. Host large flyers online and link to "
-              "them instead (better for spam filters too).", "error")
-        return render_template("new_campaign.html", default_footer=DEFAULT_FOOTER)
 
     with db() as conn:
         conn.execute("INSERT INTO campaigns(id,name,subject,body,is_html,footer,status,"
