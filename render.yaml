@@ -9,6 +9,8 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn app:app --workers 1 --threads 8 --bind 0.0.0.0:$PORT
     envVars:
+      - key: TZ
+        value: America/Los_Angeles # scheduling + timestamps in Pacific, not UTC
       - key: FLASK_SECRET
         generateValue: true # stable across restarts so logins survive them
       - key: DRY_RUN

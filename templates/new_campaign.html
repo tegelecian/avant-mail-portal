@@ -23,10 +23,10 @@
   {% endif %}
 
   <label>Who is this going to?</label>
-  <label class="check"><input type="radio" name="audience_source" value="file" checked onclick="document.getElementById('src-file').hidden=false;document.getElementById('src-group').hidden=true;"> Upload a contact file <span class="hint-inline">CSV or Excel with columns like <b>Name, Email</b> (Company optional)</span></label>
-  <label class="check"><input type="radio" name="audience_source" value="group" {% if not groups %}disabled{% endif %} onclick="document.getElementById('src-file').hidden=true;document.getElementById('src-group').hidden=false;"> Use a saved contact group {% if not groups %}<span class="hint-inline">(none yet — add one on the Contacts page)</span>{% endif %}</label>
+  <label class="check"><input type="radio" name="audience_source" value="file" checked onclick="document.getElementById('src-file').hidden=false;document.getElementById('src-group').hidden=true;document.getElementById('contacts').required=true;"> Upload a contact file <span class="hint-inline">CSV or Excel with columns like <b>Name, Email</b> (Company optional)</span></label>
+  <label class="check"><input type="radio" name="audience_source" value="group" {% if not groups %}disabled{% endif %} onclick="document.getElementById('src-file').hidden=true;document.getElementById('src-group').hidden=false;document.getElementById('contacts').required=false;"> Use a saved contact group {% if not groups %}<span class="hint-inline">(none yet — add one on the Contacts page)</span>{% endif %}</label>
   <div id="src-file">
-    <input id="contacts" name="contacts" type="file" accept=".csv,.tsv,.txt,.xlsx,.xlsm">
+    <input id="contacts" name="contacts" type="file" required accept=".csv,.tsv,.txt,.xlsx,.xlsm">
   </div>
   <div id="src-group" hidden>
     <select name="group_id" class="select">

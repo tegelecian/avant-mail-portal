@@ -647,12 +647,15 @@ def sent_today(conn):
     return row["c"]
 
 def load_attachment_payloads(conn, campaign_id):
-    payloads = []
+    """Returns (payloads, missing_filenames). A missing file must be treated
+    as an error by callers — never send the email without its attachment."""
+    payloads, missing = [], []
     for a in conn.execute("SELECT * FROM attachments WHERE campaign_id=?", (campaign_id,)):
         try:
             with open(a["stored_path"], "rb") as f:
                 content = f.read()
         except OSError:
+            missing.append(a["filename"])
             continue
         ctype = mimetypes.guess_type(a["filename"])[0] or "application/octet-stream"
         payloads.append({
@@ -661,7 +664,7 @@ def load_attachment_payloads(conn, campaign_id):
             "contentType": ctype,
             "contentBytes": base64.b64encode(content).decode(),
         })
-    return payloads
+    return payloads, missing
 
 _last_auto_scan = 0.0
 
@@ -719,7 +722,17 @@ def worker_loop():
                                          (recip["id"],))
                             recip = None
                         elif camp["id"] not in attach_cache:
-                            attach_cache[camp["id"]] = load_attachment_payloads(conn, camp["id"])
+                            payloads, missing = load_attachment_payloads(conn, camp["id"])
+                            if missing:
+                                # Pause rather than quietly send without the flyer
+                                # (e.g. after a restart wiped the upload folder).
+                                conn.execute("UPDATE campaigns SET status='paused' "
+                                             "WHERE id=?", (camp["id"],))
+                                print(f"[worker] paused campaign {camp['id']}: "
+                                      f"attachment file(s) missing: {missing}")
+                                recip = None
+                            else:
+                                attach_cache[camp["id"]] = payloads
             if not camp:
                 _auto_scan_replies()
                 time.sleep(2)
@@ -788,9 +801,11 @@ def track_click(token):
         abort(400)
     now = datetime.now().isoformat(timespec="seconds")
     with db() as conn:
-        conn.execute("UPDATE recipients SET clicked_at=COALESCE(clicked_at, ?), "
-                     "opened_at=COALESCE(opened_at, ?) WHERE token=?",
-                     (now, now, re.sub(r"[^a-f0-9]", "", token)))
+        cur = conn.execute("UPDATE recipients SET clicked_at=COALESCE(clicked_at, ?), "
+                           "opened_at=COALESCE(opened_at, ?) WHERE token=?",
+                           (now, now, re.sub(r"[^a-f0-9]", "", token)))
+        if cur.rowcount == 0:
+            abort(404)  # unknown token — refuse to act as an open redirector
     return redirect(target)
 
 @app.route("/healthz")
@@ -800,9 +815,15 @@ def healthz():
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
-        if request.form.get("password") == PORTAL_PASSWORD:
+        supplied = request.form.get("password") or ""
+        if secrets.compare_digest(supplied, PORTAL_PASSWORD):
             session["auth"] = True
-            return redirect(request.args.get("next") or url_for("dashboard"))
+            # Only redirect within the portal — never to another site.
+            nxt = request.args.get("next") or ""
+            if not nxt.startswith("/") or nxt.startswith("//"):
+                nxt = url_for("dashboard")
+            return redirect(nxt)
+        time.sleep(1.5)  # slow down password guessing
         flash("That password is not correct.", "error")
     return render_template("login.html")
 
@@ -1032,9 +1053,13 @@ def send_test(campaign_id):
         camp = conn.execute("SELECT * FROM campaigns WHERE id=?", (campaign_id,)).fetchone()
         sample = conn.execute("SELECT * FROM recipients WHERE campaign_id=? LIMIT 1",
                               (campaign_id,)).fetchone()
-        payloads = load_attachment_payloads(conn, campaign_id)
+        payloads, missing = load_attachment_payloads(conn, campaign_id)
     if not camp or not sample:
         abort(404)
+    if missing:
+        flash("Attachment file(s) missing on the server: " + ", ".join(missing)
+              + ". Re-create the campaign and upload them again.", "error")
+        return redirect(url_for("campaign_detail", campaign_id=campaign_id))
     subject = "[TEST] " + personalize(camp["subject"], sample)
     body, inline = extract_inline_images(build_email_html(camp, sample))
     force_real = TEST_SEND_REAL and graph_configured()
