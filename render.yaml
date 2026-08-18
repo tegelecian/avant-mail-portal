@@ -1,13 +1,17 @@
-# Render blueprint — demo deployment (dry run: no Microsoft credentials, no
-# real email). The free instance sleeps when idle and its SQLite database is
-# wiped on every restart/redeploy, which is fine for showing the portal.
+# Render blueprint. Starter instance + 1 GB persistent disk: the portal stays
+# awake and its SQLite database + uploaded flyers survive restarts/redeploys.
+# (Graph credentials + TEST_SEND_REAL are set in the Render dashboard, not here.)
 services:
   - type: web
     name: avant-mail-portal
     runtime: python
-    plan: free
+    plan: starter
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn app:app --workers 1 --threads 8 --bind 0.0.0.0:$PORT
+    disk:
+      name: portal-data
+      mountPath: /opt/render/project/src/data
+      sizeGB: 1
     envVars:
       - key: TZ
         value: America/Los_Angeles # scheduling + timestamps in Pacific, not UTC
