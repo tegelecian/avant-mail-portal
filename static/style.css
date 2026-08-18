@@ -286,3 +286,33 @@ select.select, input[type="datetime-local"] {
   padding: 9px 12px; border: 1px solid var(--line); border-radius: 8px;
   font-family: var(--font); font-size: 14px; background: #FBFDFC; color: var(--ink);
 }
+
+/* ---------------- rich-text composer ---------------- */
+
+.editor-shell {
+  border: 1px solid var(--line); border-radius: 8px; background: #FBFDFC;
+  overflow: hidden;
+}
+.editor-shell:focus-within { outline: 3px solid rgba(14, 92, 72, .45); outline-offset: 1px; }
+.editor-toolbar {
+  display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
+  padding: 6px 8px; border-bottom: 1px solid var(--line); background: #F3F7F5;
+}
+.editor-toolbar button {
+  border: 1px solid transparent; background: none; color: var(--ink);
+  font-family: var(--font); font-size: 13.5px; min-width: 30px; padding: 4px 9px;
+  border-radius: 6px; cursor: pointer;
+}
+.editor-toolbar button:hover { background: #E4EDE8; border-color: var(--line); }
+.tb-sep { width: 1px; height: 18px; background: var(--line); margin: 0 4px; }
+.tb-hint { font-size: 12px; color: var(--dim); margin-left: 6px; }
+.editor {
+  min-height: 260px; padding: 12px 14px; font-size: 14.5px; line-height: 1.5;
+  color: var(--ink); outline: none; position: relative;
+}
+.editor img { max-width: 100%; height: auto; }
+.editor.is-empty::before {
+  content: attr(data-placeholder); color: #93A29B; pointer-events: none;
+  position: absolute;
+}
+.editor-error { color: var(--fail); font-size: 13px; margin-top: 6px; }

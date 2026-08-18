@@ -50,7 +50,14 @@ python app.py              # http://localhost:8080, password from .env
   uploads merge idempotently.
 - Merge fields: `{{FirstName}}`, `{{Name}}`, `{{Company}}`, `{{Email}}` via
   `personalize()`. Plain-text bodies go through `plain_to_html()` (bullets,
-  autolinked URLs).
+  autolinked URLs). The compose page uses a rich-text editor (contenteditable
+  + execCommand, inline JS in `new_campaign.html`) that submits HTML with
+  `is_html=1`; follow-up bodies are still plain text.
+- Saved templates: `templates` table (name UNIQUE), managed at `/templates`,
+  loaded/saved from the compose form.
+- `TEST_SEND_REAL=true` (with Graph creds) makes "Send yourself a test"
+  deliver real email while DRY_RUN keeps campaigns simulated — this is how
+  demos let users see real emails safely.
 
 ## Gotchas learned the hard way
 
@@ -61,8 +68,14 @@ python app.py              # http://localhost:8080, password from .env
   dies on the busy port while the stale one keeps serving old code
   (`fuser -k 8080/tcp` or kill by PID — beware `pkill -f app.py` matching
   your own shell).
-- Graph attachment limit: ~4 MB per request, so the portal caps attachments
-  at 3 MB total. Bigger flyers should be links instead.
+- Graph's simple `sendMail` caps the whole request at ~4 MB. Messages whose
+  body+attachments exceed `GRAPH_SIMPLE_MAX` (2.5 MB) automatically use the
+  draft-message + upload-session flow (`_send_via_graph_large`), so the portal
+  allows up to `MAX_ATTACH_BYTES` (15 MB) of attachments per email.
+- Pasted images arrive from the composer as `data:` URIs in the HTML body.
+  Mail clients won't render those — `extract_inline_images()` converts them to
+  `cid:`-referenced inline attachments at send time (worker AND test send).
+  Previews keep the data: URIs (browsers render them fine).
 - Exchange Online limits: ~30 msgs/min, 10k recipients/day per mailbox —
   RATE_PER_MINUTE and DAILY_SEND_CAP must stay under those.
 

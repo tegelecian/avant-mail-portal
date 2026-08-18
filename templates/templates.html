@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Templates{% endblock %}
+{% block content %}
+
+<div class="page-head">
+  <div>
+    <div class="eyebrow">Reusable emails</div>
+    <h1>Templates</h1>
+  </div>
+  <a class="btn primary" href="{{ url_for('new_campaign') }}">New campaign →</a>
+</div>
+
+{% if not templates %}
+<div class="card empty">
+  <h2>No templates yet</h2>
+  <p>When you write a campaign, tick <strong>"Save this email as a template"</strong>
+  and it will appear here — next time you can start from it instead of a blank page.</p>
+  <a class="btn primary" href="{{ url_for('new_campaign') }}">Write your first campaign</a>
+</div>
+{% else %}
+<div class="card table-card">
+  <table>
+    <thead>
+      <tr><th>Template</th><th>Subject line</th><th>Saved</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for t in templates %}
+      <tr>
+        <td><strong>{{ t.name }}</strong></td>
+        <td>{{ t.subject }}</td>
+        <td class="mono">{{ (t.created_at or '')[:10] }}</td>
+        <td style="text-align:right;">
+          <form method="post" action="{{ url_for('template_delete', tid=t.id) }}"
+                onsubmit="return confirm('Delete the template &quot;{{ t.name }}&quot;?');">
+            <button class="link-btn" type="submit">delete</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p class="hint">To use a template, start a new campaign and pick it from
+"Start from a saved template" — the subject and body fill in, ready to edit.</p>
+{% endif %}
+
+{% endblock %}

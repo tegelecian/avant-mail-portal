@@ -18,6 +18,7 @@
     <nav class="nav">
       <a href="{{ url_for('dashboard') }}">Dashboard</a>
       <a href="{{ url_for('new_campaign') }}">New campaign</a>
+      <a href="{{ url_for('templates_page') }}">Templates</a>
       <a href="{{ url_for('contacts_page') }}">Contacts</a>
       <a href="{{ url_for('unsubscribes') }}">Unsubscribes</a>
       <a href="{{ url_for('logout') }}" class="nav-dim">Log out</a>
@@ -26,7 +27,7 @@
 </header>
 
 {% if g_dry_run %}
-<div class="mode-strip">DRY RUN — the portal is in practice mode. No real email is sent.</div>
+<div class="mode-strip">{% if g_test_real %}Practice mode — campaigns don't send, but "Send yourself a test" delivers a real email.{% else %}DRY RUN — the portal is in practice mode. No real email is sent.{% endif %}</div>
 {% elif not g_configured %}
 <div class="mode-strip warn">Microsoft 365 is not connected yet — sending is disabled. Fill in the .env file (see README) to go live.</div>
 {% endif %}

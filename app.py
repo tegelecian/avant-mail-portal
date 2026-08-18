@@ -59,12 +59,17 @@ SENDER_EMAIL    = os.environ.get("SENDER_EMAIL", "")
 SENDER_NAME     = os.environ.get("SENDER_NAME", "")
 PORTAL_PASSWORD = os.environ.get("PORTAL_PASSWORD", "changeme")
 DRY_RUN         = os.environ.get("DRY_RUN", "true").lower() in ("1", "true", "yes")
+# Let "Send yourself a test" deliver a real email even while DRY_RUN is on
+# (campaign sends stay simulated). Needs the Graph credentials filled in.
+TEST_SEND_REAL  = os.environ.get("TEST_SEND_REAL", "false").lower() in ("1", "true", "yes")
 
 # Exchange Online allows ~30 messages/minute and 10,000 recipients/day per
 # mailbox. Defaults stay safely under both.
 RATE_PER_MINUTE   = int(os.environ.get("RATE_PER_MINUTE", "20"))
 DAILY_SEND_CAP    = int(os.environ.get("DAILY_SEND_CAP", "8000"))
-MAX_ATTACH_BYTES  = 3 * 1024 * 1024   # keep total request under Graph's 4 MB limit
+MAX_ATTACH_BYTES  = 15 * 1024 * 1024  # per-email total; big messages go via upload sessions
+GRAPH_SIMPLE_MAX  = int(2.5 * 1024 * 1024)  # above this, Graph's 4 MB sendMail cap looms
+GRAPH_CHUNK       = 3_276_800         # upload-session chunk: multiple of 320 KiB
 
 # Open/click tracking only works if recipients' mail apps can reach the portal.
 # Set PUBLIC_URL to the portal's internet-reachable address (e.g. through a
@@ -170,6 +175,14 @@ def init_db():
             added_at TEXT,
             UNIQUE(group_id, email)
         );
+        CREATE TABLE IF NOT EXISTS templates(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            subject TEXT DEFAULT '',
+            body TEXT DEFAULT '',
+            is_html INTEGER DEFAULT 0,
+            created_at TEXT
+        );
         """)
         # Safe migrations for databases created by earlier versions.
         for table, col, decl in [
@@ -218,10 +231,22 @@ def get_graph_token():
         _token_cache["expires"] = time.time() + int(result.get("expires_in", 3600))
         return _token_cache["token"]
 
-def send_via_graph(to_email, to_name, subject, html_body, attachments):
+def _graph_error(resp):
+    """(handled, err) for a non-success Graph response; sleeps on throttle."""
+    if resp.status_code == 429:  # throttled — wait and signal retry
+        wait = int(resp.headers.get("Retry-After", "60"))
+        time.sleep(min(wait, 300))
+        return "RETRY"
+    try:
+        detail = resp.json().get("error", {}).get("message", resp.text[:200])
+    except Exception:
+        detail = resp.text[:200]
+    return f"HTTP {resp.status_code}: {detail}"
+
+def send_via_graph(to_email, to_name, subject, html_body, attachments, force_real=False):
     """Send one message as SENDER_EMAIL. Returns (ok, error_message)."""
     import requests as rq
-    if DRY_RUN:
+    if DRY_RUN and not force_real:
         time.sleep(0.05)  # simulate latency so progress is visible in tests
         return True, ""
     try:
@@ -236,6 +261,11 @@ def send_via_graph(to_email, to_name, subject, html_body, attachments):
     }
     if SENDER_NAME:
         message["from"] = {"emailAddress": {"address": SENDER_EMAIL, "name": SENDER_NAME}}
+
+    attachments = attachments or []
+    approx = len(html_body) + sum(len(a.get("contentBytes", "")) for a in attachments)
+    if approx > GRAPH_SIMPLE_MAX:
+        return _send_via_graph_large(rq, token, message, attachments)
     if attachments:
         message["attachments"] = attachments
 
@@ -251,15 +281,60 @@ def send_via_graph(to_email, to_name, subject, html_body, attachments):
 
     if resp.status_code == 202:
         return True, ""
-    if resp.status_code == 429:  # throttled — wait and signal retry
-        wait = int(resp.headers.get("Retry-After", "60"))
-        time.sleep(min(wait, 300))
-        return False, "RETRY"
+    return False, _graph_error(resp)
+
+def _send_via_graph_large(rq, token, message, attachments):
+    """Messages over the sendMail request cap: create a draft, add each
+    attachment (chunked upload session when the file itself is big), send.
+    On failure the leftover draft is deleted so it doesn't litter the mailbox."""
+    base = f"https://graph.microsoft.com/v1.0/users/{SENDER_EMAIL}"
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    msg_id = None
+
+    def fail(err):
+        if msg_id is not None:
+            try:
+                rq.delete(f"{base}/messages/{msg_id}", headers=headers, timeout=30)
+            except Exception:
+                pass
+        return False, err
+
     try:
-        detail = resp.json().get("error", {}).get("message", resp.text[:200])
-    except Exception:
-        detail = resp.text[:200]
-    return False, f"HTTP {resp.status_code}: {detail}"
+        resp = rq.post(base + "/messages", headers=headers, json=message, timeout=60)
+        if resp.status_code not in (200, 201):
+            return False, _graph_error(resp)
+        msg_id = resp.json()["id"]
+
+        for a in attachments:
+            raw = base64.b64decode(a.get("contentBytes", ""))
+            if len(raw) <= GRAPH_SIMPLE_MAX:
+                resp = rq.post(f"{base}/messages/{msg_id}/attachments",
+                               headers=headers, json=a, timeout=120)
+                if resp.status_code not in (200, 201):
+                    return fail(_graph_error(resp))
+                continue
+            item = {"attachmentType": "file", "name": a["name"], "size": len(raw)}
+            if a.get("contentId"):
+                item["contentId"], item["isInline"] = a["contentId"], True
+            resp = rq.post(f"{base}/messages/{msg_id}/attachments/createUploadSession",
+                           headers=headers, json={"AttachmentItem": item}, timeout=60)
+            if resp.status_code not in (200, 201):
+                return fail(_graph_error(resp))
+            upload_url = resp.json()["uploadUrl"]  # pre-authenticated: no auth header
+            for start in range(0, len(raw), GRAPH_CHUNK):
+                chunk = raw[start:start + GRAPH_CHUNK]
+                resp = rq.put(upload_url, data=chunk, timeout=300, headers={
+                    "Content-Length": str(len(chunk)),
+                    "Content-Range": f"bytes {start}-{start + len(chunk) - 1}/{len(raw)}"})
+                if resp.status_code not in (200, 201, 202):
+                    return fail(_graph_error(resp))
+
+        resp = rq.post(f"{base}/messages/{msg_id}/send", headers=headers, timeout=60)
+        if resp.status_code == 202:
+            return True, ""
+        return fail(_graph_error(resp))
+    except Exception as e:
+        return fail(f"Network error: {e}")
 
 # ---------------------------------------------------------------------------
 # Personalization + body rendering
@@ -311,6 +386,28 @@ def plain_to_html(text):
     if in_list:
         out.append("</ul>")
     return "\n".join(out)
+
+DATA_URI_IMG_RE = re.compile(r'src="data:(image/[a-zA-Z+.-]+);base64,([^"]+)"')
+
+def extract_inline_images(html_body):
+    """Pull pasted images (data: URIs) out of the body and turn them into
+    Graph inline attachments referenced by cid: — most mail clients (Outlook
+    especially) refuse to display data: URIs, so this is how pasted pictures
+    actually show up for recipients. Returns (html, inline_attachments)."""
+    inline = []
+    def repl(m):
+        cid = f"inline{len(inline) + 1}"
+        ext = mimetypes.guess_extension(m.group(1)) or ".png"
+        inline.append({
+            "@odata.type": "#microsoft.graph.fileAttachment",
+            "name": f"image{len(inline) + 1}{ext}",
+            "contentType": m.group(1),
+            "contentBytes": m.group(2),
+            "contentId": cid,
+            "isInline": True,
+        })
+        return f'src="cid:{cid}"'
+    return DATA_URI_IMG_RE.sub(repl, html_body), inline
 
 HREF_RE = re.compile(r'href="(https?://[^"]+)"')
 
@@ -635,8 +732,9 @@ def worker_loop():
 
             subject = personalize(camp["subject"], recip)
             body = build_email_html(camp, recip, with_tracking=True)
+            body, inline = extract_inline_images(body)
             ok, err = send_via_graph(recip["email"], recip["name"], subject,
-                                     body, attach_cache.get(camp["id"], []))
+                                     body, inline + attach_cache.get(camp["id"], []))
             with db() as conn:
                 if ok:
                     conn.execute("UPDATE recipients SET status='sent', sent_at=? WHERE id=?",
@@ -658,7 +756,8 @@ def worker_loop():
 @app.context_processor
 def inject_globals():
     return {"g_dry_run": DRY_RUN, "g_sender": SENDER_EMAIL,
-            "g_configured": graph_configured()}
+            "g_configured": graph_configured(),
+            "g_test_real": TEST_SEND_REAL and graph_configured()}
 
 @app.before_request
 def require_login():
@@ -751,17 +850,22 @@ def _list_groups(conn):
         "SELECT g.*, (SELECT COUNT(*) FROM contacts WHERE group_id=g.id) AS n "
         "FROM contact_groups g ORDER BY g.name")]
 
+def _list_templates(conn):
+    return [dict(t) for t in conn.execute(
+        "SELECT id,name,subject,body,is_html FROM templates ORDER BY name")]
+
 @app.route("/campaigns/new", methods=["GET", "POST"])
 def new_campaign():
     with db() as conn:
         groups = _list_groups(conn)
+        tpls = _list_templates(conn)
     if request.method == "GET":
         return render_template("new_campaign.html", default_footer=DEFAULT_FOOTER,
-                               groups=groups)
+                               groups=groups, templates=tpls)
 
     def back():
         return render_template("new_campaign.html", default_footer=DEFAULT_FOOTER,
-                               groups=groups)
+                               groups=groups, templates=tpls)
 
     name    = request.form.get("name", "").strip() or "Untitled campaign"
     subject = request.form.get("subject", "").strip()
@@ -844,9 +948,19 @@ def new_campaign():
                           for r in recipients])
         conn.executemany("INSERT INTO attachments(campaign_id,filename,stored_path,size) "
                          "VALUES(?,?,?,?)", attach_rows)
+        tpl_note = ""
+        if request.form.get("save_template"):
+            tpl_name = request.form.get("template_name", "").strip() or name
+            conn.execute("INSERT INTO templates(name,subject,body,is_html,created_at) "
+                         "VALUES(?,?,?,?,?) ON CONFLICT(name) DO UPDATE SET "
+                         "subject=excluded.subject, body=excluded.body, "
+                         "is_html=excluded.is_html",
+                         (tpl_name, subject, body, is_html,
+                          datetime.now().isoformat(timespec="seconds")))
+            tpl_note = f' Saved as template "{tpl_name}" for next time.'
 
     flash(f"Campaign created — {stats['valid']} contacts loaded. Review it, send yourself "
-          "a test, then launch.", "ok")
+          "a test, then launch." + tpl_note, "ok")
     return redirect(url_for("campaign_detail", campaign_id=campaign_id))
 
 @app.route("/campaigns/<campaign_id>")
@@ -922,11 +1036,16 @@ def send_test(campaign_id):
     if not camp or not sample:
         abort(404)
     subject = "[TEST] " + personalize(camp["subject"], sample)
+    body, inline = extract_inline_images(build_email_html(camp, sample))
+    force_real = TEST_SEND_REAL and graph_configured()
     ok, err = send_via_graph(test_email, "Test recipient", subject,
-                             build_email_html(camp, sample), payloads)
+                             body, inline + payloads, force_real=force_real)
     if ok:
-        flash(f"Test sent to {test_email}" + (" (dry run — nothing actually sent)."
-              if DRY_RUN else ". Check how it looks, including the attachments."), "ok")
+        if DRY_RUN and not force_real:
+            flash(f"Test sent to {test_email} (dry run — nothing actually sent).", "ok")
+        else:
+            flash(f"Test sent to {test_email} — check the inbox to see exactly how it "
+                  "looks, including the attachments.", "ok")
     else:
         flash(f"Test failed: {err}", "error")
     return redirect(url_for("campaign_detail", campaign_id=campaign_id))
@@ -1026,6 +1145,22 @@ def contacts_csv(gid):
         w.writerow([r["name"], r["email"], r["company"]])
     return send_file(io.BytesIO(buf.getvalue().encode("utf-8-sig")),
                      as_attachment=True, download_name="contacts.csv", mimetype="text/csv")
+
+# ------------------------------- Templates ---------------------------------
+
+@app.route("/templates")
+def templates_page():
+    with db() as conn:
+        tpls = [dict(t) for t in conn.execute(
+            "SELECT * FROM templates ORDER BY name")]
+    return render_template("templates.html", templates=tpls)
+
+@app.route("/templates/<int:tid>/delete", methods=["POST"])
+def template_delete(tid):
+    with db() as conn:
+        conn.execute("DELETE FROM templates WHERE id=?", (tid,))
+    flash("Template deleted. Campaigns already created from it are unaffected.", "ok")
+    return redirect(url_for("templates_page"))
 
 # ------------------------- Follow-ups / schedule / scan --------------------
 
@@ -1140,7 +1275,7 @@ start_worker()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8080"))
-    print(f"\n  Avant Mail Portal  →  http://localhost:{port}")
+    print(f"\n  Avant Mail Portal  ->  http://localhost:{port}")
     print(f"  Mode: {'DRY RUN (no real email is sent)' if DRY_RUN else 'LIVE via Microsoft 365'}"
           f"   Sender: {SENDER_EMAIL or '(not set)'}\n")
     app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False, threaded=True)

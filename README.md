@@ -159,9 +159,10 @@ moment — another reason to keep it on an always-on machine).
   cap it pauses itself and resumes after midnight automatically.
 - A 3,000-contact campaign at 20/minute takes about 2.5 hours. Leave the
   portal running; you can close the browser tab.
-- **Attachments are capped at ~3 MB total per email** (a Microsoft limit).
-  For big flyers, upload the PDF to your website or OneDrive and put the link
-  in the email — this is also much friendlier to spam filters.
+- **Attachments can total up to 15 MB per email.** Small emails go out in one
+  request; bigger ones are uploaded to Microsoft in chunks automatically. For
+  very large flyers, a link to the PDF on your website or OneDrive is still
+  the friendliest option for spam filters and recipients' inboxes.
 - **Warm up.** Don't jump from ~50/day to 3,000/day overnight. Start with a
   few hundred to your cleanest, most-engaged contacts and step up over a week
   or two. High bounce or spam-complaint rates can get the mailbox or domain

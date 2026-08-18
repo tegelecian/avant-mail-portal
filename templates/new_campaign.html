@@ -9,10 +9,18 @@
   </div>
 </div>
 
-<form method="post" enctype="multipart/form-data" class="card form-card">
+<form method="post" enctype="multipart/form-data" class="card form-card" id="campaign-form">
 
   <label for="name">Internal campaign name <span class="hint-inline">(only your team sees this)</span></label>
   <input id="name" name="name" type="text" placeholder="Wildomar ground lease — gas &amp; c-store blast">
+
+  {% if templates %}
+  <label for="template-pick">Start from a saved template <span class="hint-inline">(optional — <a href="{{ url_for('templates_page') }}">manage templates</a>)</span></label>
+  <select id="template-pick" class="select">
+    <option value="">— start blank —</option>
+    {% for t in templates %}<option value="{{ t.id }}">{{ t.name }}</option>{% endfor %}
+  </select>
+  {% endif %}
 
   <label>Who is this going to?</label>
   <label class="check"><input type="radio" name="audience_source" value="file" checked onclick="document.getElementById('src-file').hidden=false;document.getElementById('src-group').hidden=true;"> Upload a contact file <span class="hint-inline">CSV or Excel with columns like <b>Name, Email</b> (Company optional)</span></label>
@@ -30,7 +38,7 @@
   <input id="subject" name="subject" type="text" required
          placeholder="±1.07 AC signalized hard corner — 33625 Mission Trail, Wildomar">
 
-  <label for="body">Email body</label>
+  <label>Email body</label>
   <div class="token-help">
     Merge fields — the portal swaps these per contact:
     <span class="token">{% raw %}{{FirstName}}{% endraw %}</span>
@@ -38,18 +46,30 @@
     <span class="token">{% raw %}{{Company}}{% endraw %}</span>
     <span class="token">{% raw %}{{Email}}{% endraw %}</span>
   </div>
-  <textarea id="body" name="body" rows="14" required
-placeholder="Hello {% raw %}{{FirstName}}{% endraw %},
+  <div class="editor-shell">
+    <div class="editor-toolbar" id="toolbar">
+      <button type="button" data-cmd="bold" title="Bold (Ctrl+B)"><b>B</b></button>
+      <button type="button" data-cmd="italic" title="Italic (Ctrl+I)"><i>I</i></button>
+      <button type="button" data-cmd="underline" title="Underline (Ctrl+U)"><u>U</u></button>
+      <span class="tb-sep"></span>
+      <button type="button" data-cmd="insertUnorderedList" title="Bulleted list">&bull; List</button>
+      <button type="button" id="tb-link" title="Turn the selected text into a link">Link</button>
+      <span class="tb-sep"></span>
+      <button type="button" id="tb-image" title="Insert a picture into the email">Image</button>
+      <span class="tb-hint">or paste / drag a picture straight into the email</span>
+    </div>
+    <div class="editor is-empty" id="editor" contenteditable="true"
+         data-placeholder="Hello {% raw %}{{FirstName}}{% endraw %}, — write your email here"></div>
+  </div>
+  <div class="editor-error" id="editor-error" hidden>Write the email body first.</div>
+  <input type="file" id="img-file" accept="image/*" hidden>
+  <textarea id="body" name="body" hidden></textarea>
+  <input type="hidden" name="is_html" value="1">
 
-The property at 33625 Mission Trail, Wildomar, CA represents a rare, high-visibility, signalized hard-corner opportunity...
+  <label class="check big-gap"><input type="checkbox" name="save_template" id="save-template"> Save this email as a template <span class="hint-inline">(reuse the subject and body for future campaigns)</span></label>
+  <input type="text" name="template_name" id="template-name" placeholder="Template name — e.g. New listing flyer" hidden>
 
-* Adjacent to proposed 1,000,000+ SF Amazon Distribution Center
-* Surrounded by massive housing growth
-
-I've attached our current flyer for your reference."></textarea>
-  <label class="check"><input type="checkbox" name="is_html"> Body is HTML <span class="hint-inline">(leave off for normal text — lines starting with * become bullets)</span></label>
-
-  <label for="attachments">Attachments <span class="hint-inline">flyers, one-pagers — 3&nbsp;MB total max; link to big files instead</span></label>
+  <label for="attachments">Attachments <span class="hint-inline">flyers, one-pagers — up to 15&nbsp;MB total per email</span></label>
   <input id="attachments" name="attachments" type="file" multiple>
 
   <label class="check big-gap"><input type="checkbox" name="include_footer" checked> Add the compliance footer <span class="hint-inline">(company address + unsubscribe line — required for bulk email under CAN-SPAM)</span></label>
@@ -60,5 +80,111 @@ I've attached our current flyer for your reference."></textarea>
     <span class="hint-inline">Nothing sends yet — the next screen is review, test and launch.</span>
   </div>
 </form>
+
+<script>
+const editor  = document.getElementById('editor');
+const bodyEl  = document.getElementById('body');
+const imgFile = document.getElementById('img-file');
+
+function refreshEmpty() {
+  editor.classList.toggle('is-empty',
+    !editor.innerText.trim() && !editor.querySelector('img'));
+}
+editor.addEventListener('input', refreshEmpty);
+
+// Toolbar — mousedown is prevented so the text selection survives the click.
+document.querySelectorAll('#toolbar button').forEach(btn =>
+  btn.addEventListener('mousedown', e => e.preventDefault()));
+document.querySelectorAll('#toolbar [data-cmd]').forEach(btn =>
+  btn.addEventListener('click', () => {
+    editor.focus();
+    document.execCommand(btn.dataset.cmd, false, null);
+    refreshEmpty();
+  }));
+document.getElementById('tb-link').addEventListener('click', () => {
+  editor.focus();
+  const url = window.prompt('Link address (starts with https://)');
+  if (url) document.execCommand('createLink', false, url);
+});
+document.getElementById('tb-image').addEventListener('click', () => imgFile.click());
+imgFile.addEventListener('change', () => {
+  if (imgFile.files[0]) insertImage(imgFile.files[0]);
+  imgFile.value = '';
+});
+
+// Pasted/dropped images become data: URIs here; the server converts them to
+// proper inline attachments at send time. Large photos are shrunk first so
+// the email stays a reasonable size.
+function insertImage(file) {
+  if (!file || !file.type.startsWith('image/')) return;
+  const img = new Image();
+  img.onload = () => {
+    const MAXW = 900;
+    let w = img.naturalWidth, h = img.naturalHeight;
+    if (w > MAXW) { h = Math.round(h * MAXW / w); w = MAXW; }
+    const canvas = document.createElement('canvas');
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#ffffff';               // JPEG has no transparency
+    ctx.fillRect(0, 0, w, h);
+    ctx.drawImage(img, 0, 0, w, h);
+    const keepPng = file.type === 'image/png' && file.size < 500 * 1024;
+    const dataUrl = keepPng ? canvas.toDataURL('image/png')
+                            : canvas.toDataURL('image/jpeg', 0.85);
+    URL.revokeObjectURL(img.src);
+    editor.focus();
+    document.execCommand('insertHTML', false,
+      '<img src="' + dataUrl + '" style="max-width:100%;">');
+    refreshEmpty();
+  };
+  img.src = URL.createObjectURL(file);
+}
+
+editor.addEventListener('paste', e => {
+  const items = (e.clipboardData || {}).items || [];
+  for (const it of items) {
+    if (it.type && it.type.startsWith('image/')) {
+      e.preventDefault();
+      insertImage(it.getAsFile());
+      return;
+    }
+  }
+});
+editor.addEventListener('dragover', e => e.preventDefault());
+editor.addEventListener('drop', e => {
+  const files = e.dataTransfer ? e.dataTransfer.files : [];
+  if (files.length) {
+    e.preventDefault();
+    for (const f of files) insertImage(f);
+  }
+});
+
+// Saved templates
+const TEMPLATES = {{ (templates or []) | tojson }};
+const pick = document.getElementById('template-pick');
+if (pick) pick.addEventListener('change', () => {
+  const t = TEMPLATES.find(x => String(x.id) === pick.value);
+  if (!t) return;
+  document.getElementById('subject').value = t.subject || '';
+  if (t.is_html) editor.innerHTML = t.body || '';
+  else editor.innerText = t.body || '';
+  refreshEmpty();
+});
+
+const saveTpl = document.getElementById('save-template');
+saveTpl.addEventListener('change', () => {
+  const nameEl = document.getElementById('template-name');
+  nameEl.hidden = !saveTpl.checked;
+  if (saveTpl.checked && !nameEl.value)
+    nameEl.value = document.getElementById('name').value;
+});
+
+document.getElementById('campaign-form').addEventListener('submit', e => {
+  const empty = !editor.innerText.trim() && !editor.querySelector('img');
+  document.getElementById('editor-error').hidden = !empty;
+  if (empty) { e.preventDefault(); editor.focus(); return; }
+  bodyEl.value = editor.innerHTML;
+});
+</script>
 
 {% endblock %}
