@@ -21,7 +21,7 @@
       <a href="{{ url_for('templates_page') }}">Templates</a>
       <a href="{{ url_for('contacts_page') }}">Contacts</a>
       <a href="{{ url_for('unsubscribes') }}">Unsubscribes</a>
-      <a href="{{ url_for('logout') }}" class="nav-dim">Log out</a>
+      <a href="{{ url_for('logout') }}" class="nav-dim">Log out{% if g_multi_user %} ({{ g_user_name }}){% endif %}</a>
     </nav>
   </div>
 </header>
@@ -30,6 +30,11 @@
 <div class="mode-strip">{% if g_test_real %}Practice mode — campaigns don't send, but "Send yourself a test" delivers a real email.{% else %}DRY RUN — the portal is in practice mode. No real email is sent.{% endif %}</div>
 {% elif not g_configured %}
 <div class="mode-strip warn">Microsoft 365 is not connected yet — sending is disabled. Fill in the .env file (see README) to go live.</div>
+{% endif %}
+{% if g_integrity_error %}
+<div class="mode-strip warn">The nightly database check found a problem — tell Gary today, and download a backup from <a href="{{ url_for('backup_download') }}">here</a> as a precaution. Sending still works.</div>
+{% elif g_secret_days_left is not none and g_secret_days_left < 30 %}
+<div class="mode-strip warn">{% if g_secret_days_left < 0 %}The Microsoft 365 connection key has expired — sending will fail until IT issues a new one.{% else %}The Microsoft 365 connection key expires in {{ g_secret_days_left }} day{{ '' if g_secret_days_left == 1 else 's' }} — ask IT (TJ) for a renewed client secret before then.{% endif %}</div>
 {% endif %}
 
 <main class="wrap">

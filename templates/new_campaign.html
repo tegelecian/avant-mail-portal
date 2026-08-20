@@ -77,6 +77,7 @@
 
   <label for="attachments">Attachments <span class="hint-inline">flyers, one-pagers — up to 15&nbsp;MB total per email</span></label>
   <input id="attachments" name="attachments" type="file" multiple>
+  <div class="editor-error" id="attach-error" hidden></div>
   {% if request.method == 'POST' %}<span class="hint-inline">Attachments need re-choosing too — file pickers reset when the page reloads.</span>{% endif %}
 
   <label class="check big-gap"><input type="checkbox" name="include_footer" {% if request.method == 'GET' or f.get('include_footer') %}checked{% endif %}> Add the compliance footer <span class="hint-inline">(company address + unsubscribe line — required for bulk email under CAN-SPAM)</span></label>
@@ -186,10 +187,27 @@ saveTpl.addEventListener('change', () => {
     nameEl.value = document.getElementById('name').value;
 });
 
+// Tell the user their attachments are over the limit the moment they pick
+// them — not after a long upload bounces off the server-side check.
+const attachEl  = document.getElementById('attachments');
+const attachErr = document.getElementById('attach-error');
+const MAX_ATTACH = 15 * 1024 * 1024;
+function attachmentsTooBig() {
+  let total = 0;
+  for (const f of attachEl.files) total += f.size;
+  if (total <= MAX_ATTACH) { attachErr.hidden = true; return false; }
+  attachErr.textContent = 'These files total ' + (total / 1048576).toFixed(1) +
+    ' MB — the limit is 15 MB per email. Host big flyers online and link to them instead.';
+  attachErr.hidden = false;
+  return true;
+}
+attachEl.addEventListener('change', attachmentsTooBig);
+
 document.getElementById('campaign-form').addEventListener('submit', e => {
   const empty = !editor.innerText.trim() && !editor.querySelector('img');
   document.getElementById('editor-error').hidden = !empty;
   if (empty) { e.preventDefault(); editor.focus(); return; }
+  if (attachmentsTooBig()) { e.preventDefault(); attachEl.focus(); return; }
   bodyEl.value = editor.innerHTML;
   // Big attachments upload slowly — freeze the button so a second click
   // can't create a duplicate campaign mid-upload.

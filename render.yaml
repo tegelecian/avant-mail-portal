@@ -29,6 +29,9 @@ services:
         value: "false"
       - key: PORTAL_PASSWORD
         sync: false # you type the demo password once, in the Render dashboard
+      # Also settable in the dashboard (optional): PORTAL_USERS for individual
+      # logins per person (format in .env.example) and SECRET_EXPIRES=YYYY-MM-DD
+      # to get a banner before the Azure client secret lapses.
       - key: SENDER_EMAIL
         value: dberdin@avantrealestate.com
       - key: SENDER_NAME

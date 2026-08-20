@@ -58,6 +58,23 @@ CLIENT_SECRET   = os.environ.get("CLIENT_SECRET", "")
 SENDER_EMAIL    = os.environ.get("SENDER_EMAIL", "")
 SENDER_NAME     = os.environ.get("SENDER_NAME", "")
 PORTAL_PASSWORD = os.environ.get("PORTAL_PASSWORD", "changeme")
+
+def _parse_users(raw):
+    """PORTAL_USERS="Denise Berdin|dberdin@x.com|pw;Gill Berdin|gill@x.com|pw2"
+    Each person logs in with their own password and sends from their own
+    mailbox; everyone sees all campaigns."""
+    users = []
+    for part in (raw or "").split(";"):
+        bits = [b.strip() for b in part.split("|")]
+        if len(bits) == 3 and all(bits):
+            users.append({"name": bits[0], "email": bits[1], "password": bits[2]})
+    return users
+
+USERS = _parse_users(os.environ.get("PORTAL_USERS", ""))
+MULTI_USER = bool(USERS)
+if not USERS:  # classic single shared-password setup
+    USERS = [{"name": SENDER_NAME or "Team", "email": SENDER_EMAIL,
+              "password": PORTAL_PASSWORD}]
 DRY_RUN         = os.environ.get("DRY_RUN", "true").lower() in ("1", "true", "yes")
 # Let "Send yourself a test" deliver a real email even while DRY_RUN is on
 # (campaign sends stay simulated). Needs the Graph credentials filled in.
@@ -80,6 +97,19 @@ REPLY_SCAN_MINUTES = int(os.environ.get("REPLY_SCAN_MINUTES", "15"))
 
 def tracking_active():
     return bool(PUBLIC_URL) and TRACK_OPENS
+
+# Azure client secrets expire (TJ's tenant sets the date). Fill in
+# SECRET_EXPIRES=YYYY-MM-DD and the portal warns for 30 days beforehand,
+# instead of sending suddenly failing with an auth error months from now.
+SECRET_EXPIRES = os.environ.get("SECRET_EXPIRES", "")
+
+def secret_days_left():
+    if not SECRET_EXPIRES:
+        return None
+    try:
+        return (date.fromisoformat(SECRET_EXPIRES) - date.today()).days
+    except ValueError:
+        return None
 
 DEFAULT_FOOTER = os.environ.get(
     "DEFAULT_FOOTER",
@@ -249,6 +279,8 @@ def init_db():
             ("campaigns",  "scheduled_at", "TEXT"),
             ("campaigns",  "track",      "INTEGER DEFAULT 1"),
             ("campaigns",  "last_scan",  "TEXT"),
+            ("campaigns",  "sender_email", "TEXT DEFAULT ''"),
+            ("campaigns",  "sender_name",  "TEXT DEFAULT ''"),
         ]:
             try:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
@@ -256,6 +288,76 @@ def init_db():
                 pass
 
 init_db()
+
+# ---------------------------------------------------------------------------
+# Backups + integrity (the database is the whole product — treat it that way)
+# ---------------------------------------------------------------------------
+
+BACKUP_DIR  = os.path.join(DATA_DIR, "backups")
+BACKUP_KEEP = 7
+
+# Result of the last PRAGMA quick_check; non-empty = corruption found.
+# Single-process app (1 gunicorn worker), so a module global is fine.
+_integrity_error = ""
+
+def make_backup():
+    """Zip a consistent DB snapshot (sqlite backup API, safe under WAL)
+    together with the uploaded attachments. Returns the zip path."""
+    import zipfile
+    os.makedirs(BACKUP_DIR, exist_ok=True)
+    stamp = date.today().isoformat()
+    path   = os.path.join(BACKUP_DIR, f"portal-backup-{stamp}.zip")
+    tmp_db = os.path.join(BACKUP_DIR, f".snapshot-{stamp}.db")
+    src = sqlite3.connect(DB_PATH, timeout=15)
+    try:
+        dst = sqlite3.connect(tmp_db)
+        with dst:
+            src.backup(dst)
+        dst.close()
+    finally:
+        src.close()
+    try:
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+            z.write(tmp_db, "portal.db")
+            for root, _dirs, files in os.walk(UPLOAD_DIR):
+                for fn in files:
+                    full = os.path.join(root, fn)
+                    z.write(full, os.path.relpath(full, DATA_DIR))
+    finally:
+        os.remove(tmp_db)
+    old = sorted(f for f in os.listdir(BACKUP_DIR) if f.startswith("portal-backup-"))
+    for f in old[:-BACKUP_KEEP]:
+        os.remove(os.path.join(BACKUP_DIR, f))
+    return path
+
+def check_integrity():
+    """Run SQLite's quick_check; surface any problem on every page (banner)
+    so corruption is caught the day it happens, not when a page 500s."""
+    global _integrity_error
+    try:
+        with db() as conn:
+            row = conn.execute("PRAGMA quick_check").fetchone()
+        _integrity_error = "" if (row and row[0] == "ok") else (row[0] if row else "no result")
+    except Exception as e:
+        _integrity_error = str(e)
+    if _integrity_error:
+        print(f"[maintenance] DATABASE INTEGRITY PROBLEM: {_integrity_error}")
+
+_last_maintenance_day = ""
+
+def _daily_maintenance():
+    """Once a day, from the worker thread while it's idle."""
+    global _last_maintenance_day
+    today = date.today().isoformat()
+    if _last_maintenance_day == today:
+        return
+    _last_maintenance_day = today
+    try:
+        path = make_backup()
+        print(f"[maintenance] nightly backup written: {path}")
+    except Exception as e:
+        print(f"[maintenance] BACKUP FAILED: {e}")
+    check_integrity()
 
 # ---------------------------------------------------------------------------
 # Microsoft Graph
@@ -296,9 +398,13 @@ def _graph_error(resp):
         detail = resp.text[:200]
     return f"HTTP {resp.status_code}: {detail}"
 
-def send_via_graph(to_email, to_name, subject, html_body, attachments, force_real=False):
-    """Send one message as SENDER_EMAIL. Returns (ok, error_message)."""
+def send_via_graph(to_email, to_name, subject, html_body, attachments,
+                   force_real=False, sender_email="", sender_name=""):
+    """Send one message as the given sender mailbox (defaults to the
+    configured SENDER_EMAIL). Returns (ok, error_message)."""
     import requests as rq
+    sender_email = sender_email or SENDER_EMAIL
+    sender_name = sender_name or SENDER_NAME
     if DRY_RUN and not force_real:
         time.sleep(0.05)  # simulate latency so progress is visible in tests
         return True, ""
@@ -312,17 +418,17 @@ def send_via_graph(to_email, to_name, subject, html_body, attachments, force_rea
         "body": {"contentType": "HTML", "content": html_body},
         "toRecipients": [{"emailAddress": {"address": to_email, "name": to_name or to_email}}],
     }
-    if SENDER_NAME:
-        message["from"] = {"emailAddress": {"address": SENDER_EMAIL, "name": SENDER_NAME}}
+    if sender_name:
+        message["from"] = {"emailAddress": {"address": sender_email, "name": sender_name}}
 
     attachments = attachments or []
     approx = len(html_body) + sum(len(a.get("contentBytes", "")) for a in attachments)
     if approx > GRAPH_SIMPLE_MAX:
-        return _send_via_graph_large(rq, token, message, attachments)
+        return _send_via_graph_large(rq, token, message, attachments, sender_email)
     if attachments:
         message["attachments"] = attachments
 
-    url = f"https://graph.microsoft.com/v1.0/users/{SENDER_EMAIL}/sendMail"
+    url = f"https://graph.microsoft.com/v1.0/users/{sender_email}/sendMail"
     try:
         resp = rq.post(url,
                        headers={"Authorization": f"Bearer {token}",
@@ -336,11 +442,11 @@ def send_via_graph(to_email, to_name, subject, html_body, attachments, force_rea
         return True, ""
     return False, _graph_error(resp)
 
-def _send_via_graph_large(rq, token, message, attachments):
+def _send_via_graph_large(rq, token, message, attachments, sender_email):
     """Messages over the sendMail request cap: create a draft, add each
     attachment (chunked upload session when the file itself is big), send.
     On failure the leftover draft is deleted so it doesn't litter the mailbox."""
-    base = f"https://graph.microsoft.com/v1.0/users/{SENDER_EMAIL}"
+    base = f"https://graph.microsoft.com/v1.0/users/{sender_email}"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     msg_id = None
 
@@ -567,11 +673,12 @@ def scan_replies(campaign_id):
     if not camp or not camp["launched_at"]:
         return False, "This campaign hasn't been launched yet."
     since = camp["launched_at"][:19]
+    mailbox = camp["sender_email"] or SENDER_EMAIL  # replies land with whoever sent it
     try:
         token = get_graph_token()
     except Exception as e:
         return False, f"Auth error: {e}"
-    url = (f"https://graph.microsoft.com/v1.0/users/{SENDER_EMAIL}/messages"
+    url = (f"https://graph.microsoft.com/v1.0/users/{mailbox}/messages"
            f"?$filter=receivedDateTime ge {since}Z"
            "&$select=from,subject,bodyPreview,body,receivedDateTime"
            "&$orderby=receivedDateTime desc&$top=50")
@@ -787,6 +894,7 @@ def worker_loop():
                             else:
                                 attach_cache[camp["id"]] = payloads
             if not camp:
+                _daily_maintenance()
                 _auto_scan_replies()
                 time.sleep(2)
                 continue
@@ -800,7 +908,9 @@ def worker_loop():
             body = build_email_html(camp, recip, with_tracking=True)
             body, inline = extract_inline_images(body)
             ok, err = send_via_graph(recip["email"], recip["name"], subject,
-                                     body, inline + attach_cache.get(camp["id"], []))
+                                     body, inline + attach_cache.get(camp["id"], []),
+                                     sender_email=camp["sender_email"],
+                                     sender_name=camp["sender_name"])
             with db() as conn:
                 if ok:
                     conn.execute("UPDATE recipients SET status='sent', sent_at=? WHERE id=?",
@@ -821,9 +931,12 @@ def worker_loop():
 
 @app.context_processor
 def inject_globals():
-    return {"g_dry_run": DRY_RUN, "g_sender": SENDER_EMAIL,
+    return {"g_dry_run": DRY_RUN, "g_sender": current_user()["email"],
+            "g_user_name": current_user()["name"], "g_multi_user": MULTI_USER,
             "g_configured": graph_configured(),
-            "g_test_real": TEST_SEND_REAL and graph_configured()}
+            "g_test_real": TEST_SEND_REAL and graph_configured(),
+            "g_secret_days_left": secret_days_left(),
+            "g_integrity_error": _integrity_error}
 
 @app.before_request
 def require_login():
@@ -861,6 +974,14 @@ def track_click(token):
             abort(404)  # unknown token — refuse to act as an open redirector
     return redirect(target)
 
+@app.route("/backup.zip")
+def backup_download():
+    """Fresh backup of everything (database + attachments) as one zip.
+    Download one now and then whenever a big list has been uploaded —
+    it's the off-site copy if the hosting disk is ever lost."""
+    return send_file(make_backup(), as_attachment=True,
+                     download_name=f"avant-portal-backup-{date.today().isoformat()}.zip")
+
 @app.route("/healthz")
 def healthz():
     # Touch the tables the first page-loads need, so a damaged database makes
@@ -874,12 +995,26 @@ def healthz():
         return f"unhealthy: {e}", 500
     return "ok"
 
+def current_user():
+    """The logged-in user (name + sender mailbox). Falls back to the first
+    configured user so single-password setups behave exactly as before."""
+    u = session.get("user") or {}
+    return {"name": u.get("name") or USERS[0]["name"],
+            "email": u.get("email") or USERS[0]["email"]}
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
         supplied = request.form.get("password") or ""
-        if secrets.compare_digest(supplied, PORTAL_PASSWORD):
+        who = request.form.get("who", "")
+        candidates = [u for u in USERS if u["name"] == who] if MULTI_USER else USERS
+        matched = None
+        for u in candidates:
+            if secrets.compare_digest(supplied, u["password"]):
+                matched = u
+        if matched:
             session["auth"] = True
+            session["user"] = {"name": matched["name"], "email": matched["email"]}
             # Only redirect within the portal — never to another site.
             nxt = request.args.get("next") or ""
             if not nxt.startswith("/") or nxt.startswith("//"):
@@ -887,7 +1022,7 @@ def login():
             return redirect(nxt)
         time.sleep(1.5)  # slow down password guessing
         flash("That password is not correct.", "error")
-    return render_template("login.html")
+    return render_template("login.html", users=USERS if MULTI_USER else [])
 
 @app.route("/logout")
 def logout():
@@ -1018,12 +1153,14 @@ def new_campaign():
             out.write(blob)
         attach_rows.append((campaign_id, safe, path, len(blob)))
 
+    user = current_user()
     with db() as conn:
         conn.execute("INSERT INTO campaigns(id,name,subject,body,is_html,footer,status,"
-                     "created_at,parse_stats,audience) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                     "created_at,parse_stats,audience,sender_email,sender_name) "
+                     "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                      (campaign_id, name, subject, body, is_html, footer, "draft",
                       datetime.now().isoformat(timespec="seconds"), json.dumps(stats),
-                      audience))
+                      audience, user["email"], user["name"]))
         conn.executemany("INSERT INTO recipients(campaign_id,email,name,first_name,"
                          "company,token) VALUES(?,?,?,?,?,?)",
                          [(campaign_id, r["email"], r["name"], r["first_name"],
@@ -1130,7 +1267,9 @@ def send_test(campaign_id):
     body, inline = extract_inline_images(build_email_html(camp, sample))
     force_real = TEST_SEND_REAL and graph_configured()
     ok, err = send_via_graph(test_email, "Test recipient", subject,
-                             body, inline + payloads, force_real=force_real)
+                             body, inline + payloads, force_real=force_real,
+                             sender_email=camp["sender_email"],
+                             sender_name=camp["sender_name"])
     if ok:
         if DRY_RUN and not force_real:
             flash(f"Test sent to {test_email} (dry run — nothing actually sent).", "ok")
@@ -1294,11 +1433,14 @@ def create_followup(campaign_id):
              "duplicates": 0, "suppressed": 0}
     with db() as conn:
         conn.execute("INSERT INTO campaigns(id,name,subject,body,is_html,footer,status,"
-                     "created_at,parse_stats,audience,parent_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                     "created_at,parse_stats,audience,parent_id,sender_email,sender_name) "
+                     "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                      (new_id, "Follow-up: " + parent["name"], subject, body, 0, footer,
                       "draft", datetime.now().isoformat(timespec="seconds"),
                       json.dumps(stats), "Follow-up (" + ", ".join(labels) + ")",
-                      campaign_id))
+                      campaign_id,
+                      # replies must keep landing in the same person's inbox
+                      parent["sender_email"], parent["sender_name"]))
         conn.executemany("INSERT INTO recipients(campaign_id,email,name,first_name,"
                          "company,token) VALUES(?,?,?,?,?,?)",
                          [(new_id, r["email"], r["name"], r["first_name"], r["company"],

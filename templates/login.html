@@ -16,7 +16,15 @@
         <div class="flash {{ category }}">{{ message }}</div>
       {% endfor %}
     {% endwith %}
+    {% if users %}
+    <label for="who">Who's signing in?</label>
+    <select id="who" name="who" class="select">
+      {% for u in users %}<option value="{{ u.name }}">{{ u.name }} — sends as {{ u.email }}</option>{% endfor %}
+    </select>
+    <label for="password">Your password</label>
+    {% else %}
     <label for="password">Team password</label>
+    {% endif %}
     <input id="password" name="password" type="password" autofocus autocomplete="current-password">
     <button type="submit" class="btn primary wide">Sign in</button>
   </form>

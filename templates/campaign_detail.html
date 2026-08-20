@@ -99,7 +99,7 @@ Just circling back on the Wildomar hard-corner site I sent over — happy to sha
       <div class="card-title">Preview — exactly what the first contact receives</div>
       <div class="mail-preview">
         <div class="mail-meta">
-          <div><span class="dim">From:</span> {{ g_sender or "(sender not set)" }}</div>
+          <div><span class="dim">From:</span> {{ c.sender_email or g_sender or "(sender not set)" }}</div>
           <div><span class="dim">To:</span> {{ recipients[0].name if recipients else '' }} &lt;{{ recipients[0].email if recipients else '' }}&gt;</div>
           <div><span class="dim">Subject:</span> <strong>{{ preview_subject }}</strong></div>
           {% if attachments %}
