@@ -76,6 +76,11 @@ python app.py              # http://localhost:8080, password from .env
   Mail clients won't render those — `extract_inline_images()` converts them to
   `cid:`-referenced inline attachments at send time (worker AND test send).
   Previews keep the data: URIs (browsers render them fine).
+- Werkzeug ≥2.3 caps non-file multipart form fields at 500 KB by default
+  (`max_form_memory_size`) — separate from `MAX_CONTENT_LENGTH`. Pasted
+  images make the `body` field huge, which 413'd the compose form until
+  `MAX_FORM_MEMORY_SIZE` was raised to match the 32 MB request ceiling.
+  Keep the two configs in sync; the friendly 413 page is `too_large()`.
 - Exchange Online limits: ~30 msgs/min, 10k recipients/day per mailbox —
   RATE_PER_MINUTE and DAILY_SEND_CAP must stay under those.
 

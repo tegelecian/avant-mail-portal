@@ -92,6 +92,21 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET", secrets.token_hex(32))
 app.config["MAX_CONTENT_LENGTH"] = 32 * 1024 * 1024  # 32 MB upload ceiling
+# Pasted images ride inside the "body" form field as base64 data: URIs, and
+# Werkzeug caps non-file multipart fields at 500 KB by default — raise it to
+# match the request ceiling or one pasted photo 413s the whole compose form.
+app.config["MAX_FORM_MEMORY_SIZE"] = 32 * 1024 * 1024
+
+
+@app.errorhandler(413)
+def too_large(_e):
+    flash("That upload is too large — the total request limit is 32 MB. Attachments "
+          f"may total up to {MAX_ATTACH_BYTES/1024/1024:.0f} MB per email; host "
+          "anything bigger online and link to it instead.", "error")
+    ref = request.referrer or ""
+    if ref.startswith(request.host_url):
+        return redirect(ref)
+    return redirect(url_for("dashboard"))
 
 # ---------------------------------------------------------------------------
 # Database
