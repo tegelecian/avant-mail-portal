@@ -300,35 +300,52 @@ BACKUP_KEEP = 7
 # Single-process app (1 gunicorn worker), so a module global is fine.
 _integrity_error = ""
 
+# The nightly job (worker thread) and /backup.zip (request thread) can both
+# call make_backup — serialize them or the same zip gets written twice at once.
+_backup_lock = threading.Lock()
+
 def make_backup():
     """Zip a consistent DB snapshot (sqlite backup API, safe under WAL)
     together with the uploaded attachments. Returns the zip path."""
+    import shutil
     import zipfile
-    os.makedirs(BACKUP_DIR, exist_ok=True)
-    stamp = date.today().isoformat()
-    path   = os.path.join(BACKUP_DIR, f"portal-backup-{stamp}.zip")
-    tmp_db = os.path.join(BACKUP_DIR, f".snapshot-{stamp}.db")
-    src = sqlite3.connect(DB_PATH, timeout=15)
-    try:
-        dst = sqlite3.connect(tmp_db)
-        with dst:
-            src.backup(dst)
-        dst.close()
-    finally:
-        src.close()
-    try:
-        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
-            z.write(tmp_db, "portal.db")
-            for root, _dirs, files in os.walk(UPLOAD_DIR):
-                for fn in files:
-                    full = os.path.join(root, fn)
-                    z.write(full, os.path.relpath(full, DATA_DIR))
-    finally:
-        os.remove(tmp_db)
-    old = sorted(f for f in os.listdir(BACKUP_DIR) if f.startswith("portal-backup-"))
-    for f in old[:-BACKUP_KEEP]:
-        os.remove(os.path.join(BACKUP_DIR, f))
-    return path
+    with _backup_lock:
+        os.makedirs(BACKUP_DIR, exist_ok=True)
+        # Prune oldest first so peak disk usage stays at BACKUP_KEEP zips.
+        old = sorted(f for f in os.listdir(BACKUP_DIR) if f.startswith("portal-backup-"))
+        for f in old[:-(BACKUP_KEEP - 1) or None]:
+            os.remove(os.path.join(BACKUP_DIR, f))
+        # A full disk would take SQLite down with it — refuse loudly instead.
+        free = shutil.disk_usage(DATA_DIR).free
+        need = os.path.getsize(DB_PATH) + sum(
+            os.path.getsize(os.path.join(r, fn))
+            for r, _d, fs in os.walk(UPLOAD_DIR) for fn in fs)
+        if free < need + 100 * 1024 * 1024:  # keep 100 MB headroom for the DB
+            raise RuntimeError(
+                f"Not enough disk space for a backup ({free/1e6:.0f} MB free, "
+                f"~{need/1e6:.0f} MB needed). Delete old campaigns' attachments "
+                "or increase the disk size.")
+        stamp = date.today().isoformat()
+        path   = os.path.join(BACKUP_DIR, f"portal-backup-{stamp}.zip")
+        tmp_db = os.path.join(BACKUP_DIR, f".snapshot-{stamp}.db")
+        src = sqlite3.connect(DB_PATH, timeout=15)
+        try:
+            dst = sqlite3.connect(tmp_db)
+            with dst:
+                src.backup(dst)
+            dst.close()
+        finally:
+            src.close()
+        try:
+            with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+                z.write(tmp_db, "portal.db")
+                for root, _dirs, files in os.walk(UPLOAD_DIR):
+                    for fn in files:
+                        full = os.path.join(root, fn)
+                        z.write(full, os.path.relpath(full, DATA_DIR))
+        finally:
+            os.remove(tmp_db)
+        return path
 
 def check_integrity():
     """Run SQLite's quick_check; surface any problem on every page (banner)
@@ -344,18 +361,21 @@ def check_integrity():
         print(f"[maintenance] DATABASE INTEGRITY PROBLEM: {_integrity_error}")
 
 _last_maintenance_day = ""
+_backup_error = ""
 
 def _daily_maintenance():
     """Once a day, from the worker thread while it's idle."""
-    global _last_maintenance_day
+    global _last_maintenance_day, _backup_error
     today = date.today().isoformat()
     if _last_maintenance_day == today:
         return
     _last_maintenance_day = today
     try:
         path = make_backup()
+        _backup_error = ""
         print(f"[maintenance] nightly backup written: {path}")
     except Exception as e:
+        _backup_error = str(e)
         print(f"[maintenance] BACKUP FAILED: {e}")
     check_integrity()
 
@@ -936,7 +956,8 @@ def inject_globals():
             "g_configured": graph_configured(),
             "g_test_real": TEST_SEND_REAL and graph_configured(),
             "g_secret_days_left": secret_days_left(),
-            "g_integrity_error": _integrity_error}
+            "g_integrity_error": _integrity_error,
+            "g_backup_error": _backup_error}
 
 @app.before_request
 def require_login():
@@ -979,7 +1000,12 @@ def backup_download():
     """Fresh backup of everything (database + attachments) as one zip.
     Download one now and then whenever a big list has been uploaded —
     it's the off-site copy if the hosting disk is ever lost."""
-    return send_file(make_backup(), as_attachment=True,
+    try:
+        path = make_backup()
+    except Exception as e:
+        flash(f"Backup failed: {e}", "error")
+        return redirect(url_for("dashboard"))
+    return send_file(path, as_attachment=True,
                      download_name=f"avant-portal-backup-{date.today().isoformat()}.zip")
 
 @app.route("/healthz")

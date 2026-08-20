@@ -19,7 +19,8 @@
     {% if users %}
     <label for="who">Who's signing in?</label>
     <select id="who" name="who" class="select">
-      {% for u in users %}<option value="{{ u.name }}">{{ u.name }} — sends as {{ u.email }}</option>{% endfor %}
+      {# names only — this page is public, don't hand mailboxes to bots #}
+      {% for u in users %}<option value="{{ u.name }}">{{ u.name }}</option>{% endfor %}
     </select>
     <label for="password">Your password</label>
     {% else %}

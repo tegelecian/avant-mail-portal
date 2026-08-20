@@ -33,6 +33,8 @@
 {% endif %}
 {% if g_integrity_error %}
 <div class="mode-strip warn">The nightly database check found a problem — tell Gary today, and download a backup from <a href="{{ url_for('backup_download') }}">here</a> as a precaution. Sending still works.</div>
+{% elif g_backup_error %}
+<div class="mode-strip warn">Last night's automatic backup failed — tell Gary. ({{ g_backup_error }})</div>
 {% elif g_secret_days_left is not none and g_secret_days_left < 30 %}
 <div class="mode-strip warn">{% if g_secret_days_left < 0 %}The Microsoft 365 connection key has expired — sending will fail until IT issues a new one.{% else %}The Microsoft 365 connection key expires in {{ g_secret_days_left }} day{{ '' if g_secret_days_left == 1 else 's' }} — ask IT (TJ) for a renewed client secret before then.{% endif %}</div>
 {% endif %}

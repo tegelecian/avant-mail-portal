@@ -191,8 +191,25 @@ The portal helps with each of these, but they're the company's obligations:
   network reach it at `http://<that-machine's-IP>:8080`.
 - **Do not expose it to the public internet.** Keep it on the office
   network/VPN. Change `PORTAL_PASSWORD` in `.env` before the first real use.
+- **Individual logins**: set `PORTAL_USERS` (see `.env.example`) to give each
+  person their own password and sender mailbox. Campaigns send from whoever
+  created them, replies land in that person's inbox, and everyone sees all
+  campaigns. Each mailbox must be covered by the Azure application access
+  policy (step 5). Leave `PORTAL_USERS` unset for the single shared password.
 - All data lives in the `data/` folder (a SQLite database plus uploaded
-  attachments). Back it up by copying that folder.
+  attachments).
+
+### Backups & restore
+
+- Every night the portal writes `data/backups/portal-backup-<date>.zip`
+  (database snapshot + all attachments; the last 7 are kept), and it checks
+  the database for corruption — problems show a banner on every page.
+- Visit `/backup.zip` while logged in to download a fresh backup on demand.
+  Save one somewhere off the server every week or two — that copy is what
+  survives losing the hosting disk entirely.
+- **To restore**: stop the portal, unzip the backup, put `portal.db` at
+  `data/portal.db` and the `attachments/` folder at `data/attachments/`,
+  then start the portal again (the schema check at boot does the rest).
 
 ## 10. Troubleshooting
 

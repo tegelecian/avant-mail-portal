@@ -58,6 +58,20 @@ python app.py              # http://localhost:8080, password from .env
 - `TEST_SEND_REAL=true` (with Graph creds) makes "Send yourself a test"
   deliver real email while DRY_RUN keeps campaigns simulated — this is how
   demos let users see real emails safely.
+- Multi-user: `PORTAL_USERS="Name|mailbox|password;..."` gives individual
+  logins; campaigns/follow-ups are stamped with `sender_email`/`sender_name`
+  and the worker, test sends, and reply scanning all use the campaign's own
+  sender (empty = fall back to SENDER_EMAIL). Unset PORTAL_USERS = legacy
+  single-password mode; keep that path working.
+- Maintenance runs in the worker's idle branch once a day
+  (`_daily_maintenance`): backup zip to `data/backups/` (keep 7) + PRAGMA
+  quick_check. `make_backup()` is also called by `/backup.zip` — both paths
+  go through `_backup_lock`. Failures surface as banners via
+  `_integrity_error` / `_backup_error` (module globals — fine because
+  gunicorn runs exactly 1 worker process; that's also why render.yaml must
+  keep `--workers 1`, more workers would double-send campaigns).
+- `/healthz` reads two tables on purpose (catches "live but DB broken");
+  friendly 404/500 pages render `templates/error.html`.
 
 ## Gotchas learned the hard way
 
