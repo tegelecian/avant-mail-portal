@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}{{ title }}{% endblock %}
+{% block content %}
+
+<div class="page-head">
+  <div>
+    <div class="eyebrow">{{ code }}</div>
+    <h1>{{ title }}</h1>
+  </div>
+</div>
+
+<div class="card">
+  <p>{{ message }}</p>
+  <p class="hint-inline">If this keeps happening, tell Gary what you were doing
+  when it appeared — that's usually enough to fix it quickly.</p>
+  <div class="form-actions">
+    <a class="btn primary" href="{{ url_for('dashboard') }}">Back to the dashboard</a>
+  </div>
+</div>
+
+{% endblock %}

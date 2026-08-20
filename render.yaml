@@ -7,7 +7,10 @@ services:
     runtime: python
     plan: starter
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app --workers 1 --threads 8 --bind 0.0.0.0:$PORT
+    # 1 worker only — each worker process starts its own sender thread, so more
+    # would double-send campaigns. 16 threads so a few stalled slow uploads
+    # can't occupy every request slot and freeze the site (happened 2026-08-20).
+    startCommand: gunicorn app:app --workers 1 --threads 16 --bind 0.0.0.0:$PORT
     disk:
       name: portal-data
       mountPath: /opt/render/project/src/data

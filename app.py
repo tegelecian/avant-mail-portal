@@ -98,6 +98,14 @@ app.config["MAX_CONTENT_LENGTH"] = 32 * 1024 * 1024  # 32 MB upload ceiling
 app.config["MAX_FORM_MEMORY_SIZE"] = 32 * 1024 * 1024
 
 
+# Session cookie hardening. Secure only on Render — local dev is plain http
+# and a Secure cookie there would make login silently fail.
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+if os.environ.get("RENDER"):
+    app.config["SESSION_COOKIE_SECURE"] = True
+
+
 @app.errorhandler(413)
 def too_large(_e):
     flash("That upload is too large — the total request limit is 32 MB. Attachments "
@@ -107,6 +115,36 @@ def too_large(_e):
     if ref.startswith(request.host_url):
         return redirect(ref)
     return redirect(url_for("dashboard"))
+
+@app.errorhandler(404)
+def not_found(_e):
+    return render_template("error.html", code="404", title="Page not found",
+                           message="That page doesn't exist — it may have been "
+                                   "deleted, or the link is out of date."), 404
+
+@app.errorhandler(500)
+def server_error(_e):
+    # The traceback has already been logged by log_exception below (or Flask).
+    try:
+        return render_template("error.html", code="500", title="Something went wrong",
+                               message="The portal hit an unexpected error. Nothing "
+                                       "was sent that shouldn't have been, and your "
+                                       "saved campaigns, contacts and templates are "
+                                       "safe."), 500
+    except Exception:
+        return "Something went wrong. Please go back and try again.", 500
+
+@app.errorhandler(Exception)
+def log_exception(e):
+    """Log the full traceback (visible in Render logs), then show the friendly
+    500 page instead of Werkzeug's bare 'Internal Server Error'."""
+    from werkzeug.exceptions import HTTPException
+    if isinstance(e, HTTPException):
+        return e  # already handled (404/413/... keep their own handlers)
+    import traceback
+    print(f"[error] unhandled exception on {request.method} {request.path}:")
+    traceback.print_exc()
+    return server_error(e)
 
 # ---------------------------------------------------------------------------
 # Database
@@ -825,6 +863,15 @@ def track_click(token):
 
 @app.route("/healthz")
 def healthz():
+    # Touch the tables the first page-loads need, so a damaged database makes
+    # the service report unhealthy (Render alerts/restarts) instead of "live
+    # but every real page crashes" — which is what a corrupt portal.db did.
+    try:
+        with db() as conn:
+            conn.execute("SELECT count(*) FROM campaigns").fetchone()
+            conn.execute("SELECT count(*) FROM contact_groups").fetchone()
+    except Exception as e:
+        return f"unhealthy: {e}", 500
     return "ok"
 
 @app.route("/login", methods=["GET", "POST"])
@@ -1048,14 +1095,18 @@ def launch(campaign_id):
 
 @app.route("/campaigns/<campaign_id>/pause", methods=["POST"])
 def pause(campaign_id):
-    _set_status(campaign_id, ("sending",), "paused")
-    flash("Paused. Nothing more will send until you resume.", "ok")
+    if _set_status(campaign_id, ("sending",), "paused"):
+        flash("Paused. Nothing more will send until you resume.", "ok")
+    else:
+        flash("This campaign isn't sending, so there's nothing to pause.", "error")
     return redirect(url_for("campaign_detail", campaign_id=campaign_id))
 
 @app.route("/campaigns/<campaign_id>/cancel", methods=["POST"])
 def cancel(campaign_id):
-    _set_status(campaign_id, ("draft", "sending", "paused", "scheduled"), "cancelled")
-    flash("Campaign cancelled.", "ok")
+    if _set_status(campaign_id, ("draft", "sending", "paused", "scheduled"), "cancelled"):
+        flash("Campaign cancelled.", "ok")
+    else:
+        flash("This campaign is already finished or cancelled.", "error")
     return redirect(url_for("campaign_detail", campaign_id=campaign_id))
 
 @app.route("/campaigns/<campaign_id>/test", methods=["POST"])
@@ -1140,9 +1191,14 @@ def contacts_page():
             gid = request.form.get("group_id", "")
             new_name = request.form.get("new_group", "").strip()
             if new_name:
-                cur = conn.execute("INSERT INTO contact_groups(name,created_at) VALUES(?,?)",
-                                   (new_name, datetime.now().isoformat(timespec="seconds")))
-                gid = cur.lastrowid
+                existing = conn.execute("SELECT id FROM contact_groups WHERE name=? "
+                                        "COLLATE NOCASE", (new_name,)).fetchone()
+                if existing:  # same name = same group; merge rather than duplicate
+                    gid = existing["id"]
+                else:
+                    cur = conn.execute("INSERT INTO contact_groups(name,created_at) VALUES(?,?)",
+                                       (new_name, datetime.now().isoformat(timespec="seconds")))
+                    gid = cur.lastrowid
             elif not conn.execute("SELECT 1 FROM contact_groups WHERE id=?", (gid,)).fetchone():
                 flash("Pick an existing group or give the new one a name.", "error")
                 return redirect(url_for("contacts_page"))

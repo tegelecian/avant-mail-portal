@@ -9,10 +9,15 @@
   </div>
 </div>
 
+{# After a validation error the POST re-renders this page — every field except
+   file pickers refills from request.form so typed work is never lost. #}
+{% set f = request.form %}
+{% set from_group = f.get('audience_source') == 'group' %}
+
 <form method="post" enctype="multipart/form-data" class="card form-card" id="campaign-form">
 
   <label for="name">Internal campaign name <span class="hint-inline">(only your team sees this)</span></label>
-  <input id="name" name="name" type="text" placeholder="Wildomar ground lease — gas &amp; c-store blast">
+  <input id="name" name="name" type="text" value="{{ f.get('name','') }}" placeholder="Wildomar ground lease — gas &amp; c-store blast">
 
   {% if templates %}
   <label for="template-pick">Start from a saved template <span class="hint-inline">(optional — <a href="{{ url_for('templates_page') }}">manage templates</a>)</span></label>
@@ -23,19 +28,20 @@
   {% endif %}
 
   <label>Who is this going to?</label>
-  <label class="check"><input type="radio" name="audience_source" value="file" checked onclick="document.getElementById('src-file').hidden=false;document.getElementById('src-group').hidden=true;document.getElementById('contacts').required=true;"> Upload a contact file <span class="hint-inline">CSV or Excel with columns like <b>Name, Email</b> (Company optional)</span></label>
-  <label class="check"><input type="radio" name="audience_source" value="group" {% if not groups %}disabled{% endif %} onclick="document.getElementById('src-file').hidden=true;document.getElementById('src-group').hidden=false;document.getElementById('contacts').required=false;"> Use a saved contact group {% if not groups %}<span class="hint-inline">(none yet — add one on the Contacts page)</span>{% endif %}</label>
-  <div id="src-file">
-    <input id="contacts" name="contacts" type="file" required accept=".csv,.tsv,.txt,.xlsx,.xlsm">
+  <label class="check"><input type="radio" name="audience_source" value="file" {% if not from_group %}checked{% endif %} onclick="document.getElementById('src-file').hidden=false;document.getElementById('src-group').hidden=true;document.getElementById('contacts').required=true;"> Upload a contact file <span class="hint-inline">CSV or Excel with columns like <b>Name, Email</b> (Company optional)</span></label>
+  <label class="check"><input type="radio" name="audience_source" value="group" {% if from_group %}checked{% endif %} {% if not groups %}disabled{% endif %} onclick="document.getElementById('src-file').hidden=true;document.getElementById('src-group').hidden=false;document.getElementById('contacts').required=false;"> Use a saved contact group {% if not groups %}<span class="hint-inline">(none yet — add one on the Contacts page)</span>{% endif %}</label>
+  <div id="src-file" {% if from_group %}hidden{% endif %}>
+    <input id="contacts" name="contacts" type="file" {% if not from_group %}required{% endif %} accept=".csv,.tsv,.txt,.xlsx,.xlsm">
+    {% if request.method == 'POST' and not from_group %}<span class="hint-inline">Choose the file again — file pickers reset when the page reloads.</span>{% endif %}
   </div>
-  <div id="src-group" hidden>
+  <div id="src-group" {% if not from_group %}hidden{% endif %}>
     <select name="group_id" class="select">
-      {% for g in groups %}<option value="{{ g.id }}">{{ g.name }} — {{ g.n }} contacts</option>{% endfor %}
+      {% for g in groups %}<option value="{{ g.id }}" {% if f.get('group_id') == g.id|string %}selected{% endif %}>{{ g.name }} — {{ g.n }} contacts</option>{% endfor %}
     </select>
   </div>
 
   <label for="subject">Subject line</label>
-  <input id="subject" name="subject" type="text" required
+  <input id="subject" name="subject" type="text" required value="{{ f.get('subject','') }}"
          placeholder="±1.07 AC signalized hard corner — 33625 Mission Trail, Wildomar">
 
   <label>Email body</label>
@@ -58,22 +64,23 @@
       <button type="button" id="tb-image" title="Insert a picture into the email">Image</button>
       <span class="tb-hint">or paste / drag a picture straight into the email</span>
     </div>
-    <div class="editor is-empty" id="editor" contenteditable="true"
-         data-placeholder="Hello {% raw %}{{FirstName}}{% endraw %}, — write your email here"></div>
+    <div class="editor{% if not f.get('body') %} is-empty{% endif %}" id="editor" contenteditable="true"
+         data-placeholder="Hello {% raw %}{{FirstName}}{% endraw %}, — write your email here">{{ f.get('body','')|safe }}</div>
   </div>
   <div class="editor-error" id="editor-error" hidden>Write the email body first.</div>
   <input type="file" id="img-file" accept="image/*" hidden>
   <textarea id="body" name="body" hidden></textarea>
   <input type="hidden" name="is_html" value="1">
 
-  <label class="check big-gap"><input type="checkbox" name="save_template" id="save-template"> Save this email as a template <span class="hint-inline">(reuse the subject and body for future campaigns)</span></label>
-  <input type="text" name="template_name" id="template-name" placeholder="Template name — e.g. New listing flyer" hidden>
+  <label class="check big-gap"><input type="checkbox" name="save_template" id="save-template" {% if f.get('save_template') %}checked{% endif %}> Save this email as a template <span class="hint-inline">(reuse the subject and body for future campaigns)</span></label>
+  <input type="text" name="template_name" id="template-name" value="{{ f.get('template_name','') }}" placeholder="Template name — e.g. New listing flyer" {% if not f.get('save_template') %}hidden{% endif %}>
 
   <label for="attachments">Attachments <span class="hint-inline">flyers, one-pagers — up to 15&nbsp;MB total per email</span></label>
   <input id="attachments" name="attachments" type="file" multiple>
+  {% if request.method == 'POST' %}<span class="hint-inline">Attachments need re-choosing too — file pickers reset when the page reloads.</span>{% endif %}
 
-  <label class="check big-gap"><input type="checkbox" name="include_footer" checked> Add the compliance footer <span class="hint-inline">(company address + unsubscribe line — required for bulk email under CAN-SPAM)</span></label>
-  <textarea name="footer" rows="3">{{ default_footer }}</textarea>
+  <label class="check big-gap"><input type="checkbox" name="include_footer" {% if request.method == 'GET' or f.get('include_footer') %}checked{% endif %}> Add the compliance footer <span class="hint-inline">(company address + unsubscribe line — required for bulk email under CAN-SPAM)</span></label>
+  <textarea name="footer" rows="3">{{ f.get('footer', default_footer) }}</textarea>
 
   <div class="form-actions">
     <button class="btn primary" type="submit">Load contacts &amp; preview →</button>
@@ -184,6 +191,10 @@ document.getElementById('campaign-form').addEventListener('submit', e => {
   document.getElementById('editor-error').hidden = !empty;
   if (empty) { e.preventDefault(); editor.focus(); return; }
   bodyEl.value = editor.innerHTML;
+  // Big attachments upload slowly — freeze the button so a second click
+  // can't create a duplicate campaign mid-upload.
+  const btn = document.querySelector('#campaign-form button[type=submit]');
+  setTimeout(() => { btn.disabled = true; btn.textContent = 'Uploading…'; }, 0);
 });
 </script>
 
