@@ -21,7 +21,7 @@ services:
       - key: FLASK_SECRET
         generateValue: true # stable across restarts so logins survive them
       - key: DRY_RUN
-        value: "true"
+        value: "false" # LIVE: campaign launches send real email via Graph
       # Flip to "true" (and add TENANT_ID / CLIENT_ID / CLIENT_SECRET in the
       # Render dashboard) to make "Send yourself a test" deliver real email
       # while campaigns stay simulated.
