@@ -21,7 +21,9 @@ import mimetypes
 import os
 import re
 import secrets
+import signal
 import sqlite3
+import sys
 import threading
 import time
 import uuid
@@ -1530,10 +1532,70 @@ def unsubscribe_remove():
     return redirect(url_for("unsubscribes"))
 
 # ---------------------------------------------------------------------------
+# DB watchdog — Render's persistent disk occasionally goes bad at runtime
+# (every SQLite call then hangs or raises "disk I/O error") and only a full
+# container restart clears it. Render restarts a service whose process exits,
+# so after several consecutive failed probes the whole process exits on
+# purpose. A gunicorn worker respawn is NOT enough — the fresh worker
+# inherits the same bad mount — so the gunicorn master is terminated too.
+# ---------------------------------------------------------------------------
+
+WATCHDOG_INTERVAL = 30    # seconds between DB probes
+WATCHDOG_PROBE_TIMEOUT = 20   # probe slower than this counts as wedged
+WATCHDOG_MAX_FAILS = 3    # consecutive failures before exiting
+
+_UNDER_GUNICORN = "gunicorn" in sys.modules
+
+def _watchdog_probe():
+    """One DB health probe, run in a throwaway thread so a disk-level hang
+    can't block the watchdog itself. Returns an error string or None."""
+    result = {"err": "probe thread never finished (DB call hung)"}
+    def attempt():
+        try:
+            with db() as conn:
+                conn.execute("SELECT count(*) FROM campaigns").fetchone()
+            result["err"] = None
+        except Exception as e:
+            result["err"] = str(e)
+    t = threading.Thread(target=attempt, daemon=True)
+    t.start()
+    t.join(WATCHDOG_PROBE_TIMEOUT)
+    return result["err"]
+
+def _exit_for_restart():
+    print("[watchdog] database unrecoverable — exiting so the host restarts "
+          "the service", flush=True)
+    if _UNDER_GUNICORN:
+        try:
+            os.kill(os.getppid(), signal.SIGTERM)  # gunicorn master
+            time.sleep(40)  # let the master's graceful shutdown window pass
+        except Exception:
+            pass
+    os._exit(1)
+
+def watchdog_loop():
+    fails = 0
+    while True:
+        time.sleep(WATCHDOG_INTERVAL)
+        err = _watchdog_probe()
+        if err is None:
+            fails = 0
+            continue
+        fails += 1
+        print(f"[watchdog] DB probe failed ({fails}/{WATCHDOG_MAX_FAILS}): {err}",
+              flush=True)
+        if fails >= WATCHDOG_MAX_FAILS:
+            _exit_for_restart()
+
+# ---------------------------------------------------------------------------
 
 def start_worker():
     t = threading.Thread(target=worker_loop, daemon=True)
     t.start()
+    w = threading.Thread(target=watchdog_loop, daemon=True)
+    w.start()
+    print(f"[watchdog] DB watchdog armed (probe every {WATCHDOG_INTERVAL}s, "
+          f"exit after {WATCHDOG_MAX_FAILS} consecutive failures)", flush=True)
 
 start_worker()
 
