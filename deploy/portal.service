@@ -1,0 +1,22 @@
+[Unit]
+Description=Avant Mail Portal (gunicorn)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=portal
+Group=portal
+WorkingDirectory=/opt/portal
+# app.py reads .env from the working directory itself
+Environment=PYTHONUNBUFFERED=1
+Environment=TZ=America/Los_Angeles
+# 1 worker only: each worker starts its own sender thread, more would double-send.
+ExecStart=/opt/portal/.venv/bin/gunicorn app:app --workers 1 --threads 16 --bind 127.0.0.1:8080 --timeout 120 --access-logfile - --error-logfile -
+Restart=always
+RestartSec=3
+# Let the watchdog's os._exit() / SIGTERM restart path work
+KillSignal=SIGTERM
+TimeoutStopSec=45
+
+[Install]
+WantedBy=multi-user.target

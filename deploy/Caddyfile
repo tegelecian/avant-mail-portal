@@ -1,0 +1,14 @@
+__DOMAIN__ {
+    encode gzip
+    request_body {
+        max_size 40MB
+    }
+    reverse_proxy 127.0.0.1:8080 {
+        transport http {
+            read_timeout 300s
+        }
+    }
+    log {
+        output file /var/log/caddy/portal.log
+    }
+}
