@@ -18,9 +18,14 @@ Any registrar. Create an **A record** for the hostname (e.g.
 certificate automatically once the record resolves.
 
 ## 2. Create the box
-DigitalOcean → Droplets → Ubuntu 24.04, region SFO3, Premium AMD,
-2 vCPU / 4 GB is plenty. Enable **Backups** and add an SSH key (or note the
-root password). Note the IPv4.
+Any Ubuntu 24.04 VPS with 2 vCPU / 4 GB is plenty. **Done 2026-09-15:** Avant
+provisioned a GoDaddy self-managed VPS (208.109.33.246, login `avantadmin`
+with passwordless sudo — so prefix the commands below with `sudo` instead of
+logging in as root). Weekly snapshots are on GoDaddy's side.
+
+No domain yet? Use `208-109-33-246.sslip.io` as DOMAIN — sslip.io resolves
+it to the IP for free and Caddy gets a real Let's Encrypt cert. Swap to the
+real hostname later (see "Changing the domain").
 
 ## 3. Install
 ```
@@ -52,8 +57,18 @@ contacts and templates are all there.
 - Suspend the Render service (Settings → Suspend) rather than deleting it
   for a week, in case anything was missed. Then delete.
 
+## Changing the domain (e.g. when portal.avantrealestate.com exists)
+```
+sudo sed -i 's/^[^ ]* {/portal.avantrealestate.com {/' /etc/caddy/Caddyfile
+sudo systemctl reload caddy
+sudo sed -i 's#^PUBLIC_URL=.*#PUBLIC_URL=https://portal.avantrealestate.com#' /opt/portal/.env
+sudo systemctl restart portal
+```
+Caddy issues the new certificate within seconds once the A record resolves.
+
 ## Day-to-day
 - Logs: `journalctl -u portal -f`
-- Update code: `cd /opt/portal && git pull && systemctl restart portal`
+- Update code: `sudo git -C /opt/portal pull && sudo systemctl restart portal`
 - Nightly backups already land in `/opt/portal/data/backups/` (7 kept);
-  DigitalOcean's weekly droplet backup covers the whole machine.
+  the host's weekly snapshot covers the whole machine. A 2 GB swapfile was
+  added by hand (not in setup.sh).
