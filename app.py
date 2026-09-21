@@ -482,6 +482,12 @@ def _send_via_graph_large(rq, token, message, attachments, sender_email):
 
     try:
         resp = rq.post(base + "/messages", headers=headers, json=message, timeout=60)
+        if resp.status_code == 403:
+            # Mail.Send alone covers sendMail; creating a draft needs Mail.ReadWrite.
+            return False, ("Attachments this large are sent as a draft message, which needs "
+                           "the Mail.ReadWrite (Application) permission on the Microsoft 365 "
+                           "app — ask IT to add it in Azure and grant admin consent, or use a "
+                           f"flyer under {GRAPH_SIMPLE_MAX // 1024 // 1024} MB.")
         if resp.status_code not in (200, 201):
             return False, _graph_error(resp)
         msg_id = resp.json()["id"]
@@ -959,6 +965,7 @@ def worker_loop():
                 else:
                     conn.execute("UPDATE recipients SET status='failed', error=? WHERE id=?",
                                  (err[:300], recip["id"]))
+                    print(f"[worker] send to {recip['email']} failed: {err[:200]}", flush=True)
             time.sleep(interval)
         except Exception as e:
             print("[worker] error:", e)
@@ -1283,6 +1290,29 @@ def pause(campaign_id):
         flash("Paused. Nothing more will send until you resume.", "ok")
     else:
         flash("This campaign isn't sending, so there's nothing to pause.", "error")
+    return redirect(url_for("campaign_detail", campaign_id=campaign_id))
+
+@app.route("/campaigns/<campaign_id>/retry_failed", methods=["POST"])
+def retry_failed(campaign_id):
+    """Put failed recipients back to pending and resume — e.g. after IT fixes
+    a permission. Send-time suppression still applies to each one."""
+    with db() as conn:
+        camp = conn.execute("SELECT status FROM campaigns WHERE id=?",
+                            (campaign_id,)).fetchone()
+        if not camp:
+            abort(404)
+        if camp["status"] not in ("completed", "paused"):
+            flash("Retry is only available once a campaign has finished or is paused.", "error")
+            return redirect(url_for("campaign_detail", campaign_id=campaign_id))
+        n = conn.execute("UPDATE recipients SET status='pending', error=NULL "
+                         "WHERE campaign_id=? AND status='failed'", (campaign_id,)).rowcount
+        if n:
+            conn.execute("UPDATE campaigns SET status='sending' WHERE id=?", (campaign_id,))
+    if n:
+        flash(f"Retrying {n} contact{'s' if n != 1 else ''} that failed. Progress continues "
+              "in the background.", "ok")
+    else:
+        flash("No failed contacts to retry.", "error")
     return redirect(url_for("campaign_detail", campaign_id=campaign_id))
 
 @app.route("/campaigns/<campaign_id>/cancel", methods=["POST"])

@@ -29,6 +29,12 @@
           <button class="btn primary" type="submit">{{ 'Resume sending' if c.status == 'paused' else 'Launch now' }}</button>
         </form>
         {% endif %}
+        {% if counts.failed and c.status in ('completed', 'paused') %}
+        <form method="post" action="{{ url_for('retry_failed', campaign_id=c.id) }}"
+              onsubmit="return confirm('Retry the {{ counts.failed }} contact(s) that failed?');">
+          <button class="btn primary" type="submit">Retry {{ counts.failed }} failed</button>
+        </form>
+        {% endif %}
         {% if c.status == 'sending' %}
         <form method="post" action="{{ url_for('pause', campaign_id=c.id) }}">
           <button class="btn" type="submit">Pause</button>
