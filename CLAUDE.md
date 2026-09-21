@@ -95,6 +95,12 @@ python app.py              # http://localhost:8080, password from .env
   images make the `body` field huge, which 413'd the compose form until
   `MAX_FORM_MEMORY_SIZE` was raised to match the 32 MB request ceiling.
   Keep the two configs in sync; the friendly 413 page is `too_large()`.
+- `attachments.stored_path` used to be an absolute path, so a backup restored
+  on a different host (Render → VPS, 2026-09-21) pointed at files that
+  weren't there and the worker silently paused every campaign with a flyer.
+  Always open attachments via `attachment_file_path()` (falls back to
+  `data/attachments/<campaign_id>/<filename>`); new rows store a
+  DATA_DIR-relative path.
 - Exchange Online limits: ~30 msgs/min, 10k recipients/day per mailbox —
   RATE_PER_MINUTE and DAILY_SEND_CAP must stay under those.
 

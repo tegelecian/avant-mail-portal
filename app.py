@@ -828,13 +828,30 @@ def sent_today(conn):
                        "AND sent_at LIKE ?", (today + "%",)).fetchone()
     return row["c"]
 
+def attachment_file_path(a):
+    """Where an attachment row's file lives on THIS machine.
+
+    New rows store a path relative to DATA_DIR ("attachments/<id>/<name>").
+    Older rows (and any backup restored onto a different host) hold the
+    absolute path of the machine they were uploaded on — e.g. Render's
+    /opt/render/project/src/data/... — which is meaningless after a
+    migration even though the file itself was restored fine. So: use the
+    stored path if it exists, otherwise fall back to the canonical location
+    data/attachments/<campaign_id>/<filename>."""
+    p = a["stored_path"] or ""
+    if p and not os.path.isabs(p):
+        p = os.path.join(DATA_DIR, p)
+    if p and os.path.exists(p):
+        return p
+    return os.path.join(UPLOAD_DIR, a["campaign_id"], a["filename"])
+
 def load_attachment_payloads(conn, campaign_id):
     """Returns (payloads, missing_filenames). A missing file must be treated
     as an error by callers — never send the email without its attachment."""
     payloads, missing = [], []
     for a in conn.execute("SELECT * FROM attachments WHERE campaign_id=?", (campaign_id,)):
         try:
-            with open(a["stored_path"], "rb") as f:
+            with open(attachment_file_path(a), "rb") as f:
                 content = f.read()
         except OSError:
             missing.append(a["filename"])
@@ -1179,7 +1196,9 @@ def new_campaign():
         path = os.path.join(camp_dir, safe)
         with open(path, "wb") as out:
             out.write(blob)
-        attach_rows.append((campaign_id, safe, path, len(blob)))
+        # Store relative to DATA_DIR so a backup restored on another host
+        # still resolves (see attachment_file_path).
+        attach_rows.append((campaign_id, safe, os.path.relpath(path, DATA_DIR), len(blob)))
 
     user = current_user()
     with db() as conn:
