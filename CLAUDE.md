@@ -91,7 +91,9 @@ python app.py              # http://localhost:8080, password from .env
 - Graph's simple `sendMail` caps the whole request at ~4 MB. Messages whose
   body+attachments exceed `GRAPH_SIMPLE_MAX` (2.5 MB) automatically use the
   draft-message + upload-session flow (`_send_via_graph_large`), so the portal
-  allows up to `MAX_ATTACH_BYTES` (15 MB) of attachments per email.
+  allows up to `MAX_ATTACH_BYTES` (15 MB) of attachments per email. Link mode
+  allows `MAX_LINK_BYTES` (100 MB); `MAX_CONTENT_LENGTH` (110 MB) and Caddy's
+  `request_body max_size` (110MB, deploy/Caddyfile) must stay at least that.
 - Pasted images arrive from the composer as `data:` URIs in the HTML body.
   Mail clients won't render those — `extract_inline_images()` converts them to
   `cid:`-referenced inline attachments at send time (worker AND test send).
@@ -99,8 +101,9 @@ python app.py              # http://localhost:8080, password from .env
 - Werkzeug ≥2.3 caps non-file multipart form fields at 500 KB by default
   (`max_form_memory_size`) — separate from `MAX_CONTENT_LENGTH`. Pasted
   images make the `body` field huge, which 413'd the compose form until
-  `MAX_FORM_MEMORY_SIZE` was raised to match the 32 MB request ceiling.
-  Keep the two configs in sync; the friendly 413 page is `too_large()`.
+  `MAX_FORM_MEMORY_SIZE` was raised to 32 MB. It limits non-file fields only;
+  `MAX_CONTENT_LENGTH` (whole request, files included) is the larger one.
+  The friendly 413 page is `too_large()`.
 - `attachments.stored_path` used to be an absolute path, so a backup restored
   on a different host (Render → VPS, 2026-09-21) pointed at files that
   weren't there and the worker silently paused every campaign with a flyer.

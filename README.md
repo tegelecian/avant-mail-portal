@@ -160,9 +160,11 @@ moment — another reason to keep it on an always-on machine).
 - A 3,000-contact campaign at 20/minute takes about 2.5 hours. Leave the
   portal running; you can close the browser tab.
 - **Attachments can total up to 15 MB per email.** Small emails go out in one
-  request; bigger ones are uploaded to Microsoft in chunks automatically. For
-  very large flyers, a link to the PDF on your website or OneDrive is still
-  the friendliest option for spam filters and recipients' inboxes.
+  request; bigger ones (over ~2.5 MB) are uploaded to Microsoft in chunks,
+  which needs the Mail.ReadWrite permission. **"Send as download links"**
+  (on the compose page, or switchable on a campaign) takes files up to
+  100 MB: the email carries a link, the portal serves the file. It needs
+  `PUBLIC_URL`, and is the friendliest option for spam filters and inboxes.
 - **Warm up.** Don't jump from ~50/day to 3,000/day overnight. Start with a
   few hundred to your cleanest, most-engaged contacts and step up over a week
   or two. High bounce or spam-complaint rates can get the mailbox or domain

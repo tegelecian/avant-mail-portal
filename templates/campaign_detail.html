@@ -140,7 +140,8 @@ Just circling back on the Wildomar hard-corner site I sent over — happy to sha
       {{ '%.1f' | format(total / 1048576) }}&nbsp;MB these are large — download links are more
       reliable for files this size.{% endif %}</p>
       {% endif %}
-      {% if c.status in ('draft','paused','completed','scheduled') and (links_available or c.files_as_links) %}
+      {% if c.status in ('draft','paused','completed','scheduled') and (links_available or c.files_as_links)
+            and not (c.files_as_links and (attachments | sum(attribute='size')) > max_attach) %}
       <form method="post" action="{{ url_for('files_mode', campaign_id=c.id) }}">
         <input type="hidden" name="mode" value="{{ 'attach' if c.files_as_links else 'links' }}">
         <button class="btn" type="submit">{{ 'Attach the files instead' if c.files_as_links else 'Send as download links instead' }}</button>

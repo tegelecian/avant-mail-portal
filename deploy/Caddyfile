@@ -1,7 +1,7 @@
 __DOMAIN__ {
     encode gzip
     request_body {
-        max_size 40MB
+        max_size 110MB
     }
     reverse_proxy 127.0.0.1:8080 {
         transport http {

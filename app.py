@@ -87,6 +87,7 @@ TEST_SEND_REAL  = os.environ.get("TEST_SEND_REAL", "false").lower() in ("1", "tr
 RATE_PER_MINUTE   = int(os.environ.get("RATE_PER_MINUTE", "20"))
 DAILY_SEND_CAP    = int(os.environ.get("DAILY_SEND_CAP", "8000"))
 MAX_ATTACH_BYTES  = 15 * 1024 * 1024  # per-email total; big messages go via upload sessions
+MAX_LINK_BYTES    = 100 * 1024 * 1024  # "send as download links" mode — nothing rides in the email
 GRAPH_SIMPLE_MAX  = int(2.5 * 1024 * 1024)  # above this, Graph's 4 MB sendMail cap looms
 GRAPH_CHUNK       = 3_276_800         # upload-session chunk: multiple of 320 KiB
 
@@ -123,10 +124,12 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET", secrets.token_hex(32))
-app.config["MAX_CONTENT_LENGTH"] = 32 * 1024 * 1024  # 32 MB upload ceiling
+# Whole-request ceiling: link-mode files (100 MB) + body/contacts headroom.
+# Caddy's request_body max_size (deploy/Caddyfile) must be at least this.
+app.config["MAX_CONTENT_LENGTH"] = 110 * 1024 * 1024
 # Pasted images ride inside the "body" form field as base64 data: URIs, and
-# Werkzeug caps non-file multipart fields at 500 KB by default — raise it to
-# match the request ceiling or one pasted photo 413s the whole compose form.
+# Werkzeug caps non-file multipart fields at 500 KB by default — raise it or
+# one pasted photo 413s the whole compose form. (Files don't count here.)
 app.config["MAX_FORM_MEMORY_SIZE"] = 32 * 1024 * 1024
 
 
@@ -140,9 +143,9 @@ if os.environ.get("RENDER"):
 
 @app.errorhandler(413)
 def too_large(_e):
-    flash("That upload is too large — the total request limit is 32 MB. Attachments "
-          f"may total up to {MAX_ATTACH_BYTES/1024/1024:.0f} MB per email; host "
-          "anything bigger online and link to it instead.", "error")
+    flash("That upload is too large. Files may total up to "
+          f"{MAX_ATTACH_BYTES/1024/1024:.0f} MB as attachments, or "
+          f"{MAX_LINK_BYTES/1024/1024:.0f} MB when sent as download links.", "error")
     ref = request.referrer or ""
     if ref.startswith(request.host_url):
         return redirect(ref)
@@ -1180,12 +1183,14 @@ def new_campaign():
     if request.method == "GET":
         return render_template("new_campaign.html", default_footer=DEFAULT_FOOTER,
                                groups=groups, templates=tpls,
-                               links_available=bool(PUBLIC_URL))
+                               links_available=bool(PUBLIC_URL),
+                               max_attach=MAX_ATTACH_BYTES, max_link=MAX_LINK_BYTES)
 
     def back():
         return render_template("new_campaign.html", default_footer=DEFAULT_FOOTER,
                                groups=groups, templates=tpls,
-                               links_available=bool(PUBLIC_URL))
+                               links_available=bool(PUBLIC_URL),
+                               max_attach=MAX_ATTACH_BYTES, max_link=MAX_LINK_BYTES)
 
     name    = request.form.get("name", "").strip() or "Untitled campaign"
     subject = request.form.get("subject", "").strip()
@@ -1245,10 +1250,17 @@ def new_campaign():
     files = [f for f in request.files.getlist("attachments") if f and f.filename]
     blobs = [(f, f.read()) for f in files]
     total_bytes = sum(len(b) for _, b in blobs)
-    if total_bytes > MAX_ATTACH_BYTES:
-        flash(f"Attachments total {total_bytes/1024/1024:.1f} MB — the limit per email is "
-              f"{MAX_ATTACH_BYTES/1024/1024:.0f} MB. Host large flyers online and link to "
-              "them instead (better for spam filters too).", "error")
+    limit = MAX_LINK_BYTES if as_links else MAX_ATTACH_BYTES
+    if total_bytes > limit:
+        mb = total_bytes / 1024 / 1024
+        if not as_links and PUBLIC_URL and total_bytes <= MAX_LINK_BYTES:
+            flash(f"Your files total {mb:.1f} MB — too big to attach (limit "
+                  f"{MAX_ATTACH_BYTES/1024/1024:.0f} MB). Choose \"Send as download links\" "
+                  "and they can go up to "
+                  f"{MAX_LINK_BYTES/1024/1024:.0f} MB.", "error")
+        else:
+            flash(f"Your files total {mb:.1f} MB — the limit is {limit/1024/1024:.0f} MB "
+                  "per email.", "error")
         return back()
     attach_rows = []
     camp_dir = os.path.join(UPLOAD_DIR, campaign_id)
@@ -1316,7 +1328,8 @@ def campaign_detail(campaign_id):
                            configured=graph_configured(), dry_run=DRY_RUN,
                            sender=SENDER_EMAIL, rate=RATE_PER_MINUTE,
                            tracking=tracking_active(),
-                           links_available=bool(PUBLIC_URL))
+                           links_available=bool(PUBLIC_URL),
+                           max_attach=MAX_ATTACH_BYTES)
 
 def _set_status(campaign_id, from_statuses, to_status, extra_sql=""):
     with db() as conn:
@@ -1381,6 +1394,12 @@ def files_mode(campaign_id):
         flash("Download links need the portal's public address (PUBLIC_URL) to be set.", "error")
         return redirect(url_for("campaign_detail", campaign_id=campaign_id))
     with db() as conn:
+        total = conn.execute("SELECT COALESCE(SUM(size),0) FROM attachments WHERE "
+                             "campaign_id=?", (campaign_id,)).fetchone()[0]
+        if not as_links and total > MAX_ATTACH_BYTES:
+            flash(f"These files total {total/1024/1024:.1f} MB — too big to attach (limit "
+                  f"{MAX_ATTACH_BYTES/1024/1024:.0f} MB), so they have to go as links.", "error")
+            return redirect(url_for("campaign_detail", campaign_id=campaign_id))
         n = conn.execute("UPDATE campaigns SET files_as_links=? WHERE id=? AND status "
                          "IN ('draft','paused','completed','scheduled')",
                          (as_links, campaign_id)).rowcount
