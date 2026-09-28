@@ -37,8 +37,14 @@ python app.py              # http://localhost:8080, password from .env
   Status lives on the `campaigns` row; the worker picks up `sending` rows.
 - Recipients each get a `token` (uuid hex) used by the tracking endpoints
   `/t/<token>.gif` (open pixel) and `/c/<token>?u=` (click redirect). These
-  two routes plus `/login`, `/healthz`, `/static/` are the ONLY unauthenticated
-  routes — keep it that way.
+  two routes plus `/f/<token>/<name>` (see below), `/login`, `/healthz`,
+  `/static/` are the ONLY unauthenticated routes — keep it that way.
+- "Send as download links" (`campaigns.files_as_links`): files aren't
+  attached; `file_links_html()` puts `/f/<attachments.public_token>/<name>`
+  links in the body, served publicly by `public_file()`. Exists because big
+  attachments need Mail.ReadWrite (draft flow) while links need only
+  Mail.Send. Needs `PUBLIC_URL`. Files of sent campaigns must stay on disk or
+  the links in recipients' inboxes die.
 - Tracking only activates when `PUBLIC_URL` is set (recipients' mail apps
   must reach it from the internet, e.g. via Cloudflare Tunnel). Previews and
   test sends must never include tracking (`with_tracking=False`).

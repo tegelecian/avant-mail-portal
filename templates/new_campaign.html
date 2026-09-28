@@ -79,6 +79,13 @@
   <input id="attachments" name="attachments" type="file" multiple>
   <div class="editor-error" id="attach-error" hidden></div>
   {% if request.method == 'POST' %}<span class="hint-inline">Attachments need re-choosing too — file pickers reset when the page reloads.</span>{% endif %}
+  {% if links_available %}
+  <div class="files-mode">
+    <label class="check"><input type="radio" name="files_mode" value="attach" {% if f.get('files_mode') != 'links' %}checked{% endif %}> Attach to the email</label>
+    <label class="check"><input type="radio" name="files_mode" value="links" {% if f.get('files_mode') == 'links' %}checked{% endif %}> Send as download links <span class="hint-inline">(best for big flyers — the email stays small and lands better)</span></label>
+  </div>
+  <div class="hint-inline" id="big-file-hint" hidden>Over 2.5&nbsp;MB — download links are the safer choice for files this size.</div>
+  {% endif %}
 
   <label class="check big-gap"><input type="checkbox" name="include_footer" {% if request.method == 'GET' or f.get('include_footer') %}checked{% endif %}> Add the compliance footer <span class="hint-inline">(company address + unsubscribe line — required for bulk email under CAN-SPAM)</span></label>
   <textarea name="footer" rows="3">{{ f.get('footer', default_footer) }}</textarea>
@@ -202,6 +209,18 @@ function attachmentsTooBig() {
   return true;
 }
 attachEl.addEventListener('change', attachmentsTooBig);
+// Nudge toward link mode for big files (large attachments need an extra
+// Microsoft 365 permission and trip spam filters more often).
+const bigHint = document.getElementById('big-file-hint');
+function updateBigHint() {
+  if (!bigHint) return;
+  let total = 0;
+  for (const f of attachEl.files) total += f.size;
+  const asLinks = document.querySelector('input[name=files_mode][value=links]').checked;
+  bigHint.hidden = !(total > 2.5 * 1048576 && !asLinks);
+}
+attachEl.addEventListener('change', updateBigHint);
+document.querySelectorAll('input[name=files_mode]').forEach(r => r.addEventListener('change', updateBigHint));
 
 document.getElementById('campaign-form').addEventListener('submit', e => {
   const empty = !editor.innerText.trim() && !editor.querySelector('img');

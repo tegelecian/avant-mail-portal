@@ -108,7 +108,7 @@ Just circling back on the Wildomar hard-corner site I sent over — happy to sha
           <div><span class="dim">From:</span> {{ c.sender_email or g_sender or "(sender not set)" }}</div>
           <div><span class="dim">To:</span> {{ recipients[0].name if recipients else '' }} &lt;{{ recipients[0].email if recipients else '' }}&gt;</div>
           <div><span class="dim">Subject:</span> <strong>{{ preview_subject }}</strong></div>
-          {% if attachments %}
+          {% if attachments and not c.files_as_links %}
           <div><span class="dim">Attached:</span>
             {% for a in attachments %}<span class="attach-pill">{{ a.filename }} · {{ (a.size/1024) | round(0) | int }} KB</span>{% endfor %}
           </div>
@@ -126,6 +126,30 @@ Just circling back on the Wildomar hard-corner site I sent over — happy to sha
       </form>
       <p class="hint">The test uses the first contact's merge fields and includes all attachments, so you see the real thing.</p>
     </div>
+
+    {% if attachments %}
+    <div class="card">
+      <div class="card-title">How the files are sent</div>
+      {% if c.files_as_links %}
+      <p class="hint" style="margin:0 0 10px;">As <strong>download links</strong> in the email
+      (see the preview above). The email stays small, and links open the flyer straight in
+      the browser.</p>
+      {% else %}
+      <p class="hint" style="margin:0 0 10px;">As <strong>attachments</strong>.
+      {% set total = attachments | sum(attribute='size') %}{% if total > 2.5 * 1048576 %}At
+      {{ '%.1f' | format(total / 1048576) }}&nbsp;MB these are large — download links are more
+      reliable for files this size.{% endif %}</p>
+      {% endif %}
+      {% if c.status in ('draft','paused','completed','scheduled') and (links_available or c.files_as_links) %}
+      <form method="post" action="{{ url_for('files_mode', campaign_id=c.id) }}">
+        <input type="hidden" name="mode" value="{{ 'attach' if c.files_as_links else 'links' }}">
+        <button class="btn" type="submit">{{ 'Attach the files instead' if c.files_as_links else 'Send as download links instead' }}</button>
+      </form>
+      {% elif c.status == 'sending' %}
+      <p class="hint">Pause the campaign to change this.</p>
+      {% endif %}
+    </div>
+    {% endif %}
   </div>
 
   <div class="col-side">

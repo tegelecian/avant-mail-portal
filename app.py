@@ -283,11 +283,17 @@ def init_db():
             ("campaigns",  "last_scan",  "TEXT"),
             ("campaigns",  "sender_email", "TEXT DEFAULT ''"),
             ("campaigns",  "sender_name",  "TEXT DEFAULT ''"),
+            ("campaigns",  "files_as_links", "INTEGER DEFAULT 0"),
+            ("attachments", "public_token", "TEXT"),
         ]:
             try:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
             except sqlite3.OperationalError:
                 pass
+        # Every file gets an unguessable download token for "send as link" mode.
+        for a in conn.execute("SELECT id FROM attachments WHERE public_token IS NULL").fetchall():
+            conn.execute("UPDATE attachments SET public_token=? WHERE id=?",
+                         (secrets.token_hex(16), a["id"]))
 
 init_db()
 
@@ -486,8 +492,9 @@ def _send_via_graph_large(rq, token, message, attachments, sender_email):
             # Mail.Send alone covers sendMail; creating a draft needs Mail.ReadWrite.
             return False, ("Attachments this large are sent as a draft message, which needs "
                            "the Mail.ReadWrite (Application) permission on the Microsoft 365 "
-                           "app — ask IT to add it in Azure and grant admin consent, or use a "
-                           f"flyer under {GRAPH_SIMPLE_MAX // 1024 // 1024} MB.")
+                           "app — ask IT to add it in Azure and grant admin consent, use a "
+                           f"flyer under {GRAPH_SIMPLE_MAX // 1024 // 1024} MB, or switch the "
+                           "campaign to send files as download links.")
         if resp.status_code not in (200, 201):
             return False, _graph_error(resp)
         msg_id = resp.json()["id"]
@@ -610,10 +617,32 @@ def add_tracking(html_body, token):
                 'alt="" style="display:none;">')
     return tracked
 
+def file_link_url(a):
+    from urllib.parse import quote
+    return f"{PUBLIC_URL}/f/{a['public_token']}/{quote(a['filename'])}"
+
+def file_links_html(campaign_id):
+    """"Send as link" mode: the campaign's files as download links instead of
+    attachments — keeps every message small enough for plain sendMail, which
+    needs only Mail.Send (big attachments need Mail.ReadWrite)."""
+    with db() as conn:
+        files = conn.execute("SELECT * FROM attachments WHERE campaign_id=? ORDER BY id",
+                             (campaign_id,)).fetchall()
+    if not files:
+        return ""
+    items = "".join(
+        f"<li><a href=\"{html.escape(file_link_url(a))}\">{html.escape(a['filename'])}</a>"
+        f" <span style='color:#6b6b6b;'>({(a['size'] or 0) / 1024 / 1024:.1f} MB)</span></li>"
+        for a in files)
+    return ("<div style='margin:14px 0 4px;'><strong>Download:</strong>"
+            "<ul style='margin:4px 0 0;padding-left:20px;'>" + items + "</ul></div>")
+
 def build_email_html(campaign, recipient, with_tracking=False):
     """Final HTML for one recipient — styled like a normal Outlook message."""
     body_src = personalize(campaign["body"], recipient)
     body_html = body_src if campaign["is_html"] else plain_to_html(body_src)
+    if campaign["files_as_links"]:
+        body_html += file_links_html(campaign["id"])
     footer_html = ""
     if campaign["footer"]:
         footer_html = ("<br><div style='font-size:9pt;color:#6b6b6b;"
@@ -909,6 +938,9 @@ def worker_loop():
                                     "ORDER BY launched_at LIMIT 1").fetchone()
                 cap_hit = camp and sent_today(conn) >= DAILY_SEND_CAP
                 recip = None
+                # Keyed on the files mode too: a paused campaign can be
+                # switched between attachments and download links.
+                ckey = (camp["id"], camp["files_as_links"]) if camp else None
                 if camp and not cap_hit:
                     recip = conn.execute("SELECT * FROM recipients WHERE campaign_id=? "
                                          "AND status='pending' LIMIT 1",
@@ -916,7 +948,7 @@ def worker_loop():
                     if not recip:
                         conn.execute("UPDATE campaigns SET status='completed' WHERE id=?",
                                      (camp["id"],))
-                        attach_cache.pop(camp["id"], None)
+                        attach_cache.pop(ckey, None)
                     else:
                         # Suppression may have grown since the campaign was created.
                         sup = conn.execute("SELECT 1 FROM suppression WHERE email=?",
@@ -926,7 +958,7 @@ def worker_loop():
                                          "error='On unsubscribe list' WHERE id=?",
                                          (recip["id"],))
                             recip = None
-                        elif camp["id"] not in attach_cache:
+                        elif ckey not in attach_cache:
                             payloads, missing = load_attachment_payloads(conn, camp["id"])
                             if missing:
                                 # Pause rather than quietly send without the flyer
@@ -937,7 +969,9 @@ def worker_loop():
                                       f"attachment file(s) missing: {missing}")
                                 recip = None
                             else:
-                                attach_cache[camp["id"]] = payloads
+                                # Link mode still checks the files exist (a dead
+                                # download link is as bad as a missing flyer).
+                                attach_cache[ckey] = [] if camp["files_as_links"] else payloads
             if not camp:
                 _daily_maintenance()
                 _auto_scan_replies()
@@ -953,7 +987,7 @@ def worker_loop():
             body = build_email_html(camp, recip, with_tracking=True)
             body, inline = extract_inline_images(body)
             ok, err = send_via_graph(recip["email"], recip["name"], subject,
-                                     body, inline + attach_cache.get(camp["id"], []),
+                                     body, inline + attach_cache.get(ckey, []),
                                      sender_email=camp["sender_email"],
                                      sender_name=camp["sender_name"])
             with db() as conn:
@@ -988,7 +1022,7 @@ def inject_globals():
 @app.before_request
 def require_login():
     open_paths = {"/login", "/healthz"}
-    open_prefixes = ("/static/", "/t/", "/c/")
+    open_prefixes = ("/static/", "/t/", "/c/", "/f/")
     if request.path in open_paths or any(request.path.startswith(p) for p in open_prefixes):
         return
     if not session.get("auth"):
@@ -1020,6 +1054,20 @@ def track_click(token):
         if cur.rowcount == 0:
             abort(404)  # unknown token — refuse to act as an open redirector
     return redirect(target)
+
+@app.route("/f/<token>/<path:_name>")
+def public_file(token, _name):
+    """Download link for a campaign file sent in "as link" mode. Public on
+    purpose (recipients aren't logged in); the 32-hex token is the key, the
+    filename in the URL is cosmetic. Opens PDFs/images in the browser."""
+    if not re.fullmatch(r"[0-9a-f]{32}", token):
+        abort(404)
+    with db() as conn:
+        a = conn.execute("SELECT * FROM attachments WHERE public_token=?", (token,)).fetchone()
+    path = attachment_file_path(a) if a else ""
+    if not path or not os.path.exists(path):
+        abort(404)
+    return send_file(path, download_name=a["filename"], as_attachment=False, max_age=3600)
 
 @app.route("/backup.zip")
 def backup_download():
@@ -1131,18 +1179,25 @@ def new_campaign():
         tpls = _list_templates(conn)
     if request.method == "GET":
         return render_template("new_campaign.html", default_footer=DEFAULT_FOOTER,
-                               groups=groups, templates=tpls)
+                               groups=groups, templates=tpls,
+                               links_available=bool(PUBLIC_URL))
 
     def back():
         return render_template("new_campaign.html", default_footer=DEFAULT_FOOTER,
-                               groups=groups, templates=tpls)
+                               groups=groups, templates=tpls,
+                               links_available=bool(PUBLIC_URL))
 
     name    = request.form.get("name", "").strip() or "Untitled campaign"
     subject = request.form.get("subject", "").strip()
     body    = request.form.get("body", "")
     is_html = 1 if request.form.get("is_html") else 0
     footer  = request.form.get("footer", "").strip() if request.form.get("include_footer") else ""
+    as_links = 1 if request.form.get("files_mode") == "links" else 0
 
+    if as_links and not PUBLIC_URL:
+        flash("Download links need the portal's public address (PUBLIC_URL) to be set — "
+              "choose \"Attach to the email\" instead.", "error")
+        return back()
     if not subject or not body.strip():
         flash("A subject line and an email body are both required.", "error")
         return back()
@@ -1205,23 +1260,24 @@ def new_campaign():
             out.write(blob)
         # Store relative to DATA_DIR so a backup restored on another host
         # still resolves (see attachment_file_path).
-        attach_rows.append((campaign_id, safe, os.path.relpath(path, DATA_DIR), len(blob)))
+        attach_rows.append((campaign_id, safe, os.path.relpath(path, DATA_DIR), len(blob),
+                            secrets.token_hex(16)))
 
     user = current_user()
     with db() as conn:
         conn.execute("INSERT INTO campaigns(id,name,subject,body,is_html,footer,status,"
-                     "created_at,parse_stats,audience,sender_email,sender_name) "
-                     "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                     "created_at,parse_stats,audience,sender_email,sender_name,files_as_links) "
+                     "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                      (campaign_id, name, subject, body, is_html, footer, "draft",
                       datetime.now().isoformat(timespec="seconds"), json.dumps(stats),
-                      audience, user["email"], user["name"]))
+                      audience, user["email"], user["name"], as_links))
         conn.executemany("INSERT INTO recipients(campaign_id,email,name,first_name,"
                          "company,token) VALUES(?,?,?,?,?,?)",
                          [(campaign_id, r["email"], r["name"], r["first_name"],
                            r["company"], uuid.uuid4().hex)
                           for r in recipients])
-        conn.executemany("INSERT INTO attachments(campaign_id,filename,stored_path,size) "
-                         "VALUES(?,?,?,?)", attach_rows)
+        conn.executemany("INSERT INTO attachments(campaign_id,filename,stored_path,size,"
+                         "public_token) VALUES(?,?,?,?,?)", attach_rows)
         tpl_note = ""
         if request.form.get("save_template"):
             tpl_name = request.form.get("template_name", "").strip() or name
@@ -1259,7 +1315,8 @@ def campaign_detail(campaign_id):
                            preview_html=preview_html, preview_subject=preview_subject,
                            configured=graph_configured(), dry_run=DRY_RUN,
                            sender=SENDER_EMAIL, rate=RATE_PER_MINUTE,
-                           tracking=tracking_active())
+                           tracking=tracking_active(),
+                           links_available=bool(PUBLIC_URL))
 
 def _set_status(campaign_id, from_statuses, to_status, extra_sql=""):
     with db() as conn:
@@ -1315,6 +1372,25 @@ def retry_failed(campaign_id):
         flash("No failed contacts to retry.", "error")
     return redirect(url_for("campaign_detail", campaign_id=campaign_id))
 
+@app.route("/campaigns/<campaign_id>/files_mode", methods=["POST"])
+def files_mode(campaign_id):
+    """Switch between attaching the files and sending download links —
+    e.g. to get a big flyer out when Mail.ReadWrite isn't granted."""
+    as_links = 1 if request.form.get("mode") == "links" else 0
+    if as_links and not PUBLIC_URL:
+        flash("Download links need the portal's public address (PUBLIC_URL) to be set.", "error")
+        return redirect(url_for("campaign_detail", campaign_id=campaign_id))
+    with db() as conn:
+        n = conn.execute("UPDATE campaigns SET files_as_links=? WHERE id=? AND status "
+                         "IN ('draft','paused','completed','scheduled')",
+                         (as_links, campaign_id)).rowcount
+    if n:
+        flash("Files will now go out as download links in the email." if as_links else
+              "Files will now be attached to the email.", "ok")
+    else:
+        flash("Pause the campaign before changing how files are sent.", "error")
+    return redirect(url_for("campaign_detail", campaign_id=campaign_id))
+
 @app.route("/campaigns/<campaign_id>/cancel", methods=["POST"])
 def cancel(campaign_id):
     if _set_status(campaign_id, ("draft", "sending", "paused", "scheduled"), "cancelled"):
@@ -1341,6 +1417,8 @@ def send_test(campaign_id):
               + ". Re-create the campaign and upload them again.", "error")
         return redirect(url_for("campaign_detail", campaign_id=campaign_id))
     subject = "[TEST] " + personalize(camp["subject"], sample)
+    if camp["files_as_links"]:
+        payloads = []
     body, inline = extract_inline_images(build_email_html(camp, sample))
     force_real = TEST_SEND_REAL and graph_configured()
     ok, err = send_via_graph(test_email, "Test recipient", subject,
