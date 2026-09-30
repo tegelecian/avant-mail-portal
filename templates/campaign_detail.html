@@ -10,6 +10,15 @@
   <span class="chip big {{ c.status }}" id="status-chip">{{ c.status }}</span>
 </div>
 
+{% if c.archived_at %}
+<div class="flash ok" style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+  <span>Archived — hidden from the dashboard. Replies and unsubscribes are still tracked.</span>
+  <form method="post" action="{{ url_for('restore_campaign', campaign_id=c.id) }}" style="margin:0;">
+    <button class="btn sm" type="submit">Restore to dashboard</button>
+  </form>
+</div>
+{% endif %}
+
 <div class="two-col">
 
   <div class="col-main">
@@ -40,6 +49,9 @@
           <button class="btn" type="submit">Pause</button>
         </form>
         {% endif %}
+        {% if c.status in ('draft', 'paused', 'scheduled') %}
+        <a class="btn" href="{{ url_for('edit_campaign', campaign_id=c.id) }}">Edit email</a>
+        {% endif %}
         {% if c.status in ('draft','sending','paused','scheduled') %}
         <form method="post" action="{{ url_for('cancel', campaign_id=c.id) }}"
               onsubmit="return confirm('Cancel this campaign? Contacts not yet emailed will never be sent.');">
@@ -47,7 +59,19 @@
         </form>
         {% endif %}
         <a class="btn ghost" href="{{ url_for('results_csv', campaign_id=c.id) }}">Download results CSV</a>
+        {% if c.status != 'sending' and counts.sent == 0 %}
+        <form method="post" action="{{ url_for('delete_campaign', campaign_id=c.id) }}"
+              onsubmit="return confirm('Delete this campaign? No emails went out from it, so it can be removed completely. This can\'t be undone.');">
+          <button class="btn danger ghost" type="submit">Delete</button>
+        </form>
+        {% elif c.status in ('completed', 'paused', 'cancelled') and not c.archived_at %}
+        <form method="post" action="{{ url_for('delete_campaign', campaign_id=c.id) }}"
+              onsubmit="return confirm('Archive this campaign? It disappears from the dashboard, but because its emails already went out it is kept so replies and unsubscribes are still tracked.');">
+          <button class="btn ghost" type="submit">Archive</button>
+        </form>
+        {% endif %}
       </div>
+      {% if c.status == 'sending' %}<p class="hint">Pause to edit the email.</p>{% endif %}
 
       {% if c.status in ('draft','paused') %}
       <form method="post" action="{{ url_for('schedule', campaign_id=c.id) }}" class="inline-form" style="margin-top:14px;">

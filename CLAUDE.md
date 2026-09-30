@@ -52,6 +52,13 @@ python app.py              # http://localhost:8080, password from .env
   send time. Bounces and "unsubscribe" replies are auto-added by
   `apply_inbox_messages()` — that function is pure over Graph message dicts so
   it can be tested without a mailbox.
+- Editing / removing campaigns: `/campaigns/<id>/edit` works for draft,
+  scheduled and paused campaigns (reuses `new_campaign.html` with `editing`)
+  and bumps `updated_at`, which is part of the worker's attachment-cache key.
+  Contacts can't be edited. `delete_campaign()` hard-deletes only if nothing
+  was sent; otherwise it just sets `archived_at` (hidden from the dashboard),
+  because recipients still hold `/c/` and `/f/` links and "unsubscribe"
+  replies must still be matched. Don't make it hard-delete sent campaigns.
 - Contact groups: `contact_groups` + `contacts` (UNIQUE(group_id, email));
   uploads merge idempotently.
 - Merge fields: `{{FirstName}}`, `{{Name}}`, `{{Company}}`, `{{Email}}` via

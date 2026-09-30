@@ -21,6 +21,7 @@ import mimetypes
 import os
 import re
 import secrets
+import shutil
 import signal
 import sqlite3
 import sys
@@ -287,6 +288,8 @@ def init_db():
             ("campaigns",  "sender_email", "TEXT DEFAULT ''"),
             ("campaigns",  "sender_name",  "TEXT DEFAULT ''"),
             ("campaigns",  "files_as_links", "INTEGER DEFAULT 0"),
+            ("campaigns",  "updated_at",   "TEXT"),
+            ("campaigns",  "archived_at",  "TEXT"),
             ("attachments", "public_token", "TEXT"),
         ]:
             try:
@@ -941,9 +944,10 @@ def worker_loop():
                                     "ORDER BY launched_at LIMIT 1").fetchone()
                 cap_hit = camp and sent_today(conn) >= DAILY_SEND_CAP
                 recip = None
-                # Keyed on the files mode too: a paused campaign can be
-                # switched between attachments and download links.
-                ckey = (camp["id"], camp["files_as_links"]) if camp else None
+                # Keyed on the files mode and last edit too: a paused campaign
+                # can switch attachments/links or have its files changed.
+                ckey = ((camp["id"], camp["files_as_links"], camp["updated_at"])
+                        if camp else None)
                 if camp and not cap_hit:
                     recip = conn.execute("SELECT * FROM recipients WHERE campaign_id=? "
                                          "AND status='pending' LIMIT 1",
@@ -1153,14 +1157,19 @@ def campaign_counts(conn, campaign_id):
 @app.route("/")
 def dashboard():
     with db() as conn:
+        show_archived = request.args.get("archived") == "1"
         campaigns = []
-        for c in conn.execute("SELECT * FROM campaigns ORDER BY created_at DESC"):
+        for c in conn.execute("SELECT * FROM campaigns WHERE (archived_at IS NOT NULL)=? "
+                              "ORDER BY created_at DESC", (int(show_archived),)):
             item = dict(c)
             item["counts"] = campaign_counts(conn, c["id"])
             campaigns.append(item)
+        archived_count = conn.execute("SELECT COUNT(*) c FROM campaigns "
+                                      "WHERE archived_at IS NOT NULL").fetchone()["c"]
         today_count = sent_today(conn)
         sup_count = conn.execute("SELECT COUNT(*) c FROM suppression").fetchone()["c"]
     return render_template("dashboard.html", campaigns=campaigns,
+                           show_archived=show_archived, archived_count=archived_count,
                            today_count=today_count, sup_count=sup_count,
                            daily_cap=DAILY_SEND_CAP, rate=RATE_PER_MINUTE,
                            configured=graph_configured(), dry_run=DRY_RUN,
@@ -1174,6 +1183,54 @@ def _list_groups(conn):
 def _list_templates(conn):
     return [dict(t) for t in conn.execute(
         "SELECT id,name,subject,body,is_html FROM templates ORDER BY name")]
+
+def _too_big_message(total_bytes, as_links):
+    """Error text if these files are over the per-email limit, else ""."""
+    limit = MAX_LINK_BYTES if as_links else MAX_ATTACH_BYTES
+    if total_bytes <= limit:
+        return ""
+    mb = total_bytes / 1024 / 1024
+    if not as_links and PUBLIC_URL and total_bytes <= MAX_LINK_BYTES:
+        return (f"Your files total {mb:.1f} MB — too big to attach (limit "
+                f"{MAX_ATTACH_BYTES/1024/1024:.0f} MB). Choose \"Send as download links\" "
+                "and they can go up to "
+                f"{MAX_LINK_BYTES/1024/1024:.0f} MB.")
+    return f"Your files total {mb:.1f} MB — the limit is {limit/1024/1024:.0f} MB per email."
+
+def _write_attachments(campaign_id, blobs):
+    """Save uploaded (FileStorage, bytes) pairs; returns attachment rows.
+    Never overwrites an existing file — a flyer already linked from sent
+    emails must keep serving what those recipients were sent."""
+    rows = []
+    camp_dir = os.path.join(UPLOAD_DIR, campaign_id)
+    os.makedirs(camp_dir, exist_ok=True)
+    for f, blob in blobs:
+        safe = re.sub(r"[^A-Za-z0-9. _()-]", "_", os.path.basename(f.filename))
+        stem, ext = os.path.splitext(safe)
+        n = 2
+        while os.path.exists(os.path.join(camp_dir, safe)):
+            safe = f"{stem} ({n}){ext}"
+            n += 1
+        path = os.path.join(camp_dir, safe)
+        with open(path, "wb") as out:
+            out.write(blob)
+        # Store relative to DATA_DIR so a backup restored on another host
+        # still resolves (see attachment_file_path).
+        rows.append((campaign_id, safe, os.path.relpath(path, DATA_DIR), len(blob),
+                     secrets.token_hex(16)))
+    return rows
+
+def _maybe_save_template(conn, fallback_name, subject, body, is_html):
+    if not request.form.get("save_template"):
+        return ""
+    tpl_name = request.form.get("template_name", "").strip() or fallback_name
+    conn.execute("INSERT INTO templates(name,subject,body,is_html,created_at) "
+                 "VALUES(?,?,?,?,?) ON CONFLICT(name) DO UPDATE SET "
+                 "subject=excluded.subject, body=excluded.body, "
+                 "is_html=excluded.is_html",
+                 (tpl_name, subject, body, is_html,
+                  datetime.now().isoformat(timespec="seconds")))
+    return f' Saved as template "{tpl_name}" for next time.'
 
 @app.route("/campaigns/new", methods=["GET", "POST"])
 def new_campaign():
@@ -1249,31 +1306,11 @@ def new_campaign():
     # anything to disk so a rejected upload leaves no orphan files behind).
     files = [f for f in request.files.getlist("attachments") if f and f.filename]
     blobs = [(f, f.read()) for f in files]
-    total_bytes = sum(len(b) for _, b in blobs)
-    limit = MAX_LINK_BYTES if as_links else MAX_ATTACH_BYTES
-    if total_bytes > limit:
-        mb = total_bytes / 1024 / 1024
-        if not as_links and PUBLIC_URL and total_bytes <= MAX_LINK_BYTES:
-            flash(f"Your files total {mb:.1f} MB — too big to attach (limit "
-                  f"{MAX_ATTACH_BYTES/1024/1024:.0f} MB). Choose \"Send as download links\" "
-                  "and they can go up to "
-                  f"{MAX_LINK_BYTES/1024/1024:.0f} MB.", "error")
-        else:
-            flash(f"Your files total {mb:.1f} MB — the limit is {limit/1024/1024:.0f} MB "
-                  "per email.", "error")
+    too_big = _too_big_message(sum(len(b) for _, b in blobs), as_links)
+    if too_big:
+        flash(too_big, "error")
         return back()
-    attach_rows = []
-    camp_dir = os.path.join(UPLOAD_DIR, campaign_id)
-    os.makedirs(camp_dir, exist_ok=True)
-    for f, blob in blobs:
-        safe = re.sub(r"[^A-Za-z0-9. _()-]", "_", os.path.basename(f.filename))
-        path = os.path.join(camp_dir, safe)
-        with open(path, "wb") as out:
-            out.write(blob)
-        # Store relative to DATA_DIR so a backup restored on another host
-        # still resolves (see attachment_file_path).
-        attach_rows.append((campaign_id, safe, os.path.relpath(path, DATA_DIR), len(blob),
-                            secrets.token_hex(16)))
+    attach_rows = _write_attachments(campaign_id, blobs)
 
     user = current_user()
     with db() as conn:
@@ -1290,16 +1327,7 @@ def new_campaign():
                           for r in recipients])
         conn.executemany("INSERT INTO attachments(campaign_id,filename,stored_path,size,"
                          "public_token) VALUES(?,?,?,?,?)", attach_rows)
-        tpl_note = ""
-        if request.form.get("save_template"):
-            tpl_name = request.form.get("template_name", "").strip() or name
-            conn.execute("INSERT INTO templates(name,subject,body,is_html,created_at) "
-                         "VALUES(?,?,?,?,?) ON CONFLICT(name) DO UPDATE SET "
-                         "subject=excluded.subject, body=excluded.body, "
-                         "is_html=excluded.is_html",
-                         (tpl_name, subject, body, is_html,
-                          datetime.now().isoformat(timespec="seconds")))
-            tpl_note = f' Saved as template "{tpl_name}" for next time.'
+        tpl_note = _maybe_save_template(conn, name, subject, body, is_html)
 
     flash(f"Campaign created — {stats['valid']} contacts loaded. Review it, send yourself "
           "a test, then launch." + tpl_note, "ok")
@@ -1339,6 +1367,159 @@ def _set_status(campaign_id, from_statuses, to_status, extra_sql=""):
         conn.execute(f"UPDATE campaigns SET status=? {extra_sql} WHERE id=?",
                      (to_status, campaign_id))
     return True
+
+# Content can change until the campaign is sending; a paused one can be
+# edited too (only the contacts not yet emailed get the new version).
+EDITABLE_STATUSES = ("draft", "scheduled", "paused")
+
+@app.route("/campaigns/<campaign_id>/edit", methods=["GET", "POST"])
+def edit_campaign(campaign_id):
+    with db() as conn:
+        camp = conn.execute("SELECT * FROM campaigns WHERE id=?", (campaign_id,)).fetchone()
+        if not camp:
+            abort(404)
+        counts = campaign_counts(conn, campaign_id)
+        attachments = [dict(a) for a in conn.execute(
+            "SELECT * FROM attachments WHERE campaign_id=? ORDER BY id", (campaign_id,))]
+        tpls = _list_templates(conn)
+    if camp["status"] not in EDITABLE_STATUSES:
+        flash("Pause the campaign before editing it." if camp["status"] == "sending" else
+              "This campaign has finished, so it can't be edited — its emails are already "
+              "out.", "error")
+        return redirect(url_for("campaign_detail", campaign_id=campaign_id))
+
+    # Follow-ups are stored as plain text; the editor works in HTML, so
+    # convert once here and save back as HTML.
+    body_html = camp["body"] if camp["is_html"] else plain_to_html(camp["body"])
+    prefill = {"name": camp["name"], "subject": camp["subject"], "body": body_html,
+               "include_footer": "1" if camp["footer"] else "",
+               "footer": camp["footer"] or DEFAULT_FOOTER,
+               "files_mode": "links" if camp["files_as_links"] else "attach"}
+    # Files already linked from sent emails must stay put (see public_file).
+    can_remove_files = counts["sent"] == 0
+
+    def page():
+        return render_template("new_campaign.html", default_footer=DEFAULT_FOOTER,
+                               groups=[], templates=tpls, editing=camp, counts=counts,
+                               attachments=attachments, prefill=prefill,
+                               can_remove_files=can_remove_files,
+                               links_available=bool(PUBLIC_URL),
+                               max_attach=MAX_ATTACH_BYTES, max_link=MAX_LINK_BYTES)
+    if request.method == "GET":
+        return page()
+
+    name    = request.form.get("name", "").strip() or camp["name"]
+    subject = request.form.get("subject", "").strip()
+    body    = request.form.get("body", "")
+    is_html = 1 if request.form.get("is_html") else 0
+    footer  = request.form.get("footer", "").strip() if request.form.get("include_footer") else ""
+    as_links = 1 if request.form.get("files_mode") == "links" else 0
+
+    if as_links and not PUBLIC_URL:
+        flash("Download links need the portal's public address (PUBLIC_URL) to be set — "
+              "choose \"Attach to the email\" instead.", "error")
+        return page()
+    if not subject or not body.strip():
+        flash("A subject line and an email body are both required.", "error")
+        return page()
+
+    remove_ids = set()
+    if can_remove_files:
+        own = {a["id"] for a in attachments}
+        remove_ids = {int(x) for x in request.form.getlist("remove_attachment")
+                      if x.isdigit() and int(x) in own}
+    kept_bytes = sum(a["size"] or 0 for a in attachments if a["id"] not in remove_ids)
+    files = [f for f in request.files.getlist("attachments") if f and f.filename]
+    blobs = [(f, f.read()) for f in files]
+    too_big = _too_big_message(kept_bytes + sum(len(b) for _, b in blobs), as_links)
+    if too_big:
+        flash(too_big, "error")
+        return page()
+
+    new_rows = _write_attachments(campaign_id, blobs)
+    removed = [a for a in attachments if a["id"] in remove_ids]
+    tpl_note = ""
+    with db() as conn:
+        # Status guard: if it was launched meanwhile, don't touch it.
+        n = conn.execute("UPDATE campaigns SET name=?, subject=?, body=?, is_html=?, "
+                         "footer=?, files_as_links=?, updated_at=? "
+                         "WHERE id=? AND status IN ('draft','scheduled','paused')",
+                         (name, subject, body, is_html, footer, as_links,
+                          datetime.now().isoformat(timespec="microseconds"),
+                          campaign_id)).rowcount
+        if n:
+            conn.executemany("DELETE FROM attachments WHERE id=?",
+                             [(a["id"],) for a in removed])
+            conn.executemany("INSERT INTO attachments(campaign_id,filename,stored_path,"
+                             "size,public_token) VALUES(?,?,?,?,?)", new_rows)
+            tpl_note = _maybe_save_template(conn, name, subject, body, is_html)
+    if not n:
+        for row in new_rows:
+            _remove_file(os.path.join(DATA_DIR, row[2]))
+        flash("This campaign started sending before your changes were saved — pause it, "
+              "then edit again.", "error")
+        return redirect(url_for("campaign_detail", campaign_id=campaign_id))
+    for a in removed:
+        _remove_file(attachment_file_path(a))
+
+    msg = "Changes saved."
+    if counts["sent"]:
+        msg += (f" The {counts['sent']} contact{'s' if counts['sent'] != 1 else ''} already "
+                "emailed got the earlier version; everyone else gets this one.")
+    flash(msg + " Send yourself a test to check it." + tpl_note, "ok")
+    return redirect(url_for("campaign_detail", campaign_id=campaign_id))
+
+def _remove_file(path):
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+@app.route("/campaigns/<campaign_id>/delete", methods=["POST"])
+def delete_campaign(campaign_id):
+    """Clean up the dashboard. A campaign that never emailed anyone is
+    deleted outright. One that did is only archived (hidden): its recipients
+    still hold click/download links and may still reply "unsubscribe", so
+    its tracking rows, files and reply scanning have to keep working."""
+    with db() as conn:
+        camp = conn.execute("SELECT * FROM campaigns WHERE id=?", (campaign_id,)).fetchone()
+        if not camp:
+            abort(404)
+        counts = campaign_counts(conn, campaign_id)
+        if camp["status"] == "sending":
+            flash("Pause or cancel this campaign before removing it.", "error")
+            return redirect(url_for("campaign_detail", campaign_id=campaign_id))
+        if counts["sent"] == 0:
+            # Guarded delete: never remove a campaign the worker just started.
+            deleted = conn.execute("DELETE FROM campaigns WHERE id=? AND status!='sending'",
+                                   (campaign_id,)).rowcount
+            if not deleted:
+                flash("This campaign started sending — pause or cancel it first.", "error")
+                return redirect(url_for("campaign_detail", campaign_id=campaign_id))
+            conn.execute("DELETE FROM recipients WHERE campaign_id=?", (campaign_id,))
+            conn.execute("DELETE FROM attachments WHERE campaign_id=?", (campaign_id,))
+        elif camp["status"] == "scheduled":
+            flash("This campaign is scheduled to send to more contacts — cancel it first, "
+                  "then archive it.", "error")
+            return redirect(url_for("campaign_detail", campaign_id=campaign_id))
+        else:
+            conn.execute("UPDATE campaigns SET archived_at=? WHERE id=?",
+                         (datetime.now().isoformat(timespec="seconds"), campaign_id))
+    if counts["sent"] == 0:
+        shutil.rmtree(os.path.join(UPLOAD_DIR, campaign_id), ignore_errors=True)
+        flash(f"Deleted \"{camp['name']}\".", "ok")
+    else:
+        flash(f"Archived \"{camp['name']}\" — it's off the dashboard. Its emails already "
+              "went out, so it's kept (replies and unsubscribes are still tracked) under "
+              "\"Show archived\".", "ok")
+    return redirect(url_for("dashboard"))
+
+@app.route("/campaigns/<campaign_id>/restore", methods=["POST"])
+def restore_campaign(campaign_id):
+    with db() as conn:
+        conn.execute("UPDATE campaigns SET archived_at=NULL WHERE id=?", (campaign_id,))
+    flash("Back on the dashboard.", "ok")
+    return redirect(url_for("campaign_detail", campaign_id=campaign_id))
 
 @app.route("/campaigns/<campaign_id>/launch", methods=["POST"])
 def launch(campaign_id):

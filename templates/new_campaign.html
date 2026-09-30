@@ -1,17 +1,28 @@
 {% extends "base.html" %}
-{% block title %}New campaign{% endblock %}
+{% block title %}{{ 'Edit campaign' if editing else 'New campaign' }}{% endblock %}
 {% block content %}
 
 <div class="page-head">
   <div>
+    {% if editing %}
+    <div class="eyebrow">Edit campaign · <a href="{{ url_for('campaign_detail', campaign_id=editing.id) }}">back without saving</a></div>
+    <h1>{{ editing.name }}</h1>
+    {% else %}
     <div class="eyebrow">Step 1 of 2 — compose</div>
     <h1>New campaign</h1>
+    {% endif %}
   </div>
 </div>
 
+{% if editing and counts.sent %}
+<div class="flash error">{{ counts.sent }} of {{ counts.total }} contacts were already emailed. Your
+changes only reach the {{ counts.pending }} still waiting — the rest keep what they received.</div>
+{% endif %}
+
 {# After a validation error the POST re-renders this page — every field except
-   file pickers refills from request.form so typed work is never lost. #}
-{% set f = request.form %}
+   file pickers refills from request.form so typed work is never lost. When
+   editing, the first load fills from the saved campaign (prefill). #}
+{% set f = request.form if request.method == 'POST' else (prefill or {}) %}
 {% set from_group = f.get('audience_source') == 'group' %}
 
 <form method="post" enctype="multipart/form-data" class="card form-card" id="campaign-form">
@@ -27,6 +38,11 @@
   </select>
   {% endif %}
 
+  {% if editing %}
+  <label>Who is this going to?</label>
+  <p class="hint" style="margin:0;">{{ editing.audience or 'Uploaded list' }} — <span class="mono">{{ counts.total }}</span> contacts.
+  The contact list can't be changed on an existing campaign; to email a different list, create a new campaign.</p>
+  {% else %}
   <label>Who is this going to?</label>
   <label class="check"><input type="radio" name="audience_source" value="file" {% if not from_group %}checked{% endif %} onclick="document.getElementById('src-file').hidden=false;document.getElementById('src-group').hidden=true;document.getElementById('contacts').required=true;"> Upload a contact file <span class="hint-inline">CSV or Excel with columns like <b>Name, Email</b> (Company optional)</span></label>
   <label class="check"><input type="radio" name="audience_source" value="group" {% if from_group %}checked{% endif %} {% if not groups %}disabled{% endif %} onclick="document.getElementById('src-file').hidden=true;document.getElementById('src-group').hidden=false;document.getElementById('contacts').required=false;"> Use a saved contact group {% if not groups %}<span class="hint-inline">(none yet — add one on the Contacts page)</span>{% endif %}</label>
@@ -39,6 +55,7 @@
       {% for g in groups %}<option value="{{ g.id }}" {% if f.get('group_id') == g.id|string %}selected{% endif %}>{{ g.name }} — {{ g.n }} contacts</option>{% endfor %}
     </select>
   </div>
+  {% endif %}
 
   <label for="subject">Subject line</label>
   <input id="subject" name="subject" type="text" required value="{{ f.get('subject','') }}"
@@ -75,7 +92,25 @@
   <label class="check big-gap"><input type="checkbox" name="save_template" id="save-template" {% if f.get('save_template') %}checked{% endif %}> Save this email as a template <span class="hint-inline">(reuse the subject and body for future campaigns)</span></label>
   <input type="text" name="template_name" id="template-name" value="{{ f.get('template_name','') }}" placeholder="Template name — e.g. New listing flyer" {% if not f.get('save_template') %}hidden{% endif %}>
 
-  <label for="attachments">Attachments <span class="hint-inline">flyers, one-pagers — up to {{ max_attach // 1048576 }}&nbsp;MB attached{% if links_available %}, or {{ max_link // 1048576 }}&nbsp;MB as download links{% endif %}</span></label>
+  {% if editing and attachments %}
+  <label>Files on this campaign</label>
+  <ul class="fact-list">
+    {% for a in attachments %}
+    <li>
+      {% if can_remove_files %}
+      <label class="check" style="margin:0;"><input type="checkbox" name="remove_attachment" value="{{ a.id }}" data-size="{{ a.size or 0 }}"
+        {% if a.id|string in (request.form.getlist('remove_attachment') if request.method == 'POST' else []) %}checked{% endif %}>
+        Remove <span class="attach-pill">{{ a.filename }} · {{ ((a.size or 0)/1024) | round(0) | int }} KB</span></label>
+      {% else %}
+      <span class="attach-pill">{{ a.filename }} · {{ ((a.size or 0)/1024) | round(0) | int }} KB</span>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% if not can_remove_files %}<span class="hint-inline">Files can't be removed once emails have gone out — recipients' download links point at them. You can still add more.</span>{% endif %}
+  {% endif %}
+
+  <label for="attachments">{{ 'Add more files' if editing and attachments else 'Attachments' }} <span class="hint-inline">flyers, one-pagers — up to {{ max_attach // 1048576 }}&nbsp;MB attached{% if links_available %}, or {{ max_link // 1048576 }}&nbsp;MB as download links{% endif %}</span></label>
   <input id="attachments" name="attachments" type="file" multiple>
   <div class="editor-error" id="attach-error" hidden></div>
   {% if request.method == 'POST' %}<span class="hint-inline">Attachments need re-choosing too — file pickers reset when the page reloads.</span>{% endif %}
@@ -87,12 +122,18 @@
   <div class="hint-inline" id="big-file-hint" hidden>Over 2.5&nbsp;MB — download links are the safer choice for files this size.</div>
   {% endif %}
 
-  <label class="check big-gap"><input type="checkbox" name="include_footer" {% if request.method == 'GET' or f.get('include_footer') %}checked{% endif %}> Add the compliance footer <span class="hint-inline">(company address + unsubscribe line — required for bulk email under CAN-SPAM)</span></label>
+  <label class="check big-gap"><input type="checkbox" name="include_footer" {% if (request.method == 'GET' and not editing) or f.get('include_footer') %}checked{% endif %}> Add the compliance footer <span class="hint-inline">(company address + unsubscribe line — required for bulk email under CAN-SPAM)</span></label>
   <textarea name="footer" rows="3">{{ f.get('footer', default_footer) }}</textarea>
 
   <div class="form-actions">
+    {% if editing %}
+    <button class="btn primary" type="submit">Save changes →</button>
+    <a class="btn ghost" href="{{ url_for('campaign_detail', campaign_id=editing.id) }}">Cancel</a>
+    <span class="hint-inline">Nothing sends — you'll be back on the review screen.</span>
+    {% else %}
     <button class="btn primary" type="submit">Load contacts &amp; preview →</button>
     <span class="hint-inline">Nothing sends yet — the next screen is review, test and launch.</span>
+    {% endif %}
   </div>
 </form>
 
@@ -204,8 +245,16 @@ function linkMode() {
   const r = document.querySelector('input[name=files_mode][value=links]');
   return !!(r && r.checked);
 }
-function attachmentsTooBig() {
+// Files already on the campaign (edit page), minus any ticked for removal.
+function keptBytes() {
   let total = 0;
+  document.querySelectorAll('input[name=remove_attachment]').forEach(cb => {
+    if (!cb.checked) total += Number(cb.dataset.size);
+  });
+  return total + {{ (attachments | map(attribute='size') | map('int') | sum) if (editing and not can_remove_files) else 0 }};
+}
+function attachmentsTooBig() {
+  let total = keptBytes();
   for (const f of attachEl.files) total += f.size;
   const limit = linkMode() ? MAX_LINK : MAX_ATTACH;
   if (total <= limit) { attachErr.hidden = true; return false; }
@@ -223,12 +272,12 @@ attachEl.addEventListener('change', attachmentsTooBig);
 const bigHint = document.getElementById('big-file-hint');
 function updateBigHint() {
   if (!bigHint) return;
-  let total = 0;
+  let total = keptBytes();
   for (const f of attachEl.files) total += f.size;
   bigHint.hidden = !(total > 2.5 * 1048576 && total <= MAX_ATTACH && !linkMode());
 }
 attachEl.addEventListener('change', updateBigHint);
-document.querySelectorAll('input[name=files_mode]').forEach(r => {
+document.querySelectorAll('input[name=files_mode], input[name=remove_attachment]').forEach(r => {
   r.addEventListener('change', updateBigHint);
   r.addEventListener('change', attachmentsTooBig);
 });
@@ -242,7 +291,7 @@ document.getElementById('campaign-form').addEventListener('submit', e => {
   // Big attachments upload slowly — freeze the button so a second click
   // can't create a duplicate campaign mid-upload.
   const btn = document.querySelector('#campaign-form button[type=submit]');
-  setTimeout(() => { btn.disabled = true; btn.textContent = 'Uploading…'; }, 0);
+  setTimeout(() => { btn.disabled = true; btn.textContent = '{{ 'Saving…' if editing else 'Uploading…' }}'; }, 0);
 });
 </script>
 

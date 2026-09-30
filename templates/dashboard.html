@@ -4,10 +4,17 @@
 
 <div class="page-head">
   <div>
-    <div class="eyebrow">Overview</div>
-    <h1>Campaigns</h1>
+    <div class="eyebrow">Overview{% if show_archived %} · archived{% endif %}</div>
+    <h1>{{ 'Archived campaigns' if show_archived else 'Campaigns' }}</h1>
   </div>
-  <a class="btn primary" href="{{ url_for('new_campaign') }}">+ New campaign</a>
+  <div class="controls" style="margin-top:0;">
+    {% if show_archived %}
+    <a class="btn ghost" href="{{ url_for('dashboard') }}">← Back to campaigns</a>
+    {% elif archived_count %}
+    <a class="btn ghost" href="{{ url_for('dashboard', archived=1) }}">Show archived ({{ archived_count }})</a>
+    {% endif %}
+    <a class="btn primary" href="{{ url_for('new_campaign') }}">+ New campaign</a>
+  </div>
 </div>
 
 <div class="stat-row">
@@ -51,11 +58,35 @@
           <div class="row-sub mono">{{ c.counts.sent }} / {{ c.counts.total }} sent{% if c.counts.replied %} · {{ c.counts.replied }} replied{% endif %}{% if c.counts.failed %} · {{ c.counts.failed }} failed{% endif %}</div>
         </td>
         <td><span class="chip {{ c.status }}">{{ c.status }}</span></td>
-        <td><a class="btn ghost sm" href="{{ url_for('campaign_detail', campaign_id=c.id) }}">Open</a></td>
+        <td>
+          <div class="controls" style="margin-top:0; flex-wrap:nowrap;">
+            <a class="btn ghost sm" href="{{ url_for('campaign_detail', campaign_id=c.id) }}">Open</a>
+            {% if show_archived %}
+            <form method="post" action="{{ url_for('restore_campaign', campaign_id=c.id) }}">
+              <button class="btn ghost sm" type="submit">Restore</button>
+            </form>
+            {% elif c.status != 'sending' and c.counts.sent == 0 %}
+            <form method="post" action="{{ url_for('delete_campaign', campaign_id=c.id) }}"
+                  onsubmit="return confirm('Delete this campaign? No emails went out from it, so it can be removed completely. This can\'t be undone.');">
+              <button class="btn danger ghost sm" type="submit">Delete</button>
+            </form>
+            {% elif c.status in ('completed', 'paused', 'cancelled') %}
+            <form method="post" action="{{ url_for('delete_campaign', campaign_id=c.id) }}"
+                  onsubmit="return confirm('Archive this campaign? It disappears from the dashboard, but because its emails already went out it is kept so replies and unsubscribes are still tracked. You can restore it from Show archived.');">
+              <button class="btn ghost sm" type="submit" title="Emails already went out, so this hides it rather than deleting it">Archive</button>
+            </form>
+            {% endif %}
+          </div>
+        </td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
+</div>
+{% elif show_archived %}
+<div class="card empty">
+  <div class="eyebrow">Nothing archived</div>
+  <p>Campaigns you archive from the dashboard show up here.</p>
 </div>
 {% else %}
 <div class="card empty">
