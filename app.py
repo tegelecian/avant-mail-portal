@@ -209,6 +209,12 @@ def _init_wal():
 
 _init_wal()
 
+ADDRESS_RE = re.compile(r"[a-z0-9._%+'-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}")
+
+def extract_addresses(text):
+    """Bare lower-case addresses found anywhere in text: 'Bill <b@x.com>;' -> ['b@x.com']."""
+    return [a.strip(".'-") for a in ADDRESS_RE.findall((text or "").lower())]
+
 def init_db():
     with db() as conn:
         conn.executescript("""
@@ -296,6 +302,13 @@ def init_db():
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
             except sqlite3.OperationalError:
                 pass
+        # Unsubscribes pasted from Outlook were stored as "<a@b.com>", "a@b.com." etc. and never
+        # matched at send time (Nov 2026). Add the clean address next to every such entry.
+        for s in conn.execute("SELECT email, reason, added_at FROM suppression").fetchall():
+            for clean in extract_addresses(s["email"]):
+                if clean != s["email"]:
+                    conn.execute("INSERT OR IGNORE INTO suppression(email,reason,added_at) "
+                                 "VALUES(?,?,?)", (clean, s["reason"], s["added_at"]))
         # Every file gets an unguessable download token for "send as link" mode.
         for a in conn.execute("SELECT id FROM attachments WHERE public_token IS NULL").fetchall():
             conn.execute("UPDATE attachments SET public_token=? WHERE id=?",
@@ -1845,8 +1858,8 @@ def unsubscribes():
         raw = request.form.get("emails", "")
         added = 0
         with db() as conn:
-            for token in re.split(r"[\s,;]+", raw):
-                email = token.strip().lower()
+            # Pull bare addresses out of whatever was pasted ("Name <a@b.com>; ...", mailto:, quotes).
+            for email in dict.fromkeys(extract_addresses(raw)):
                 if EMAIL_RE.match(email):
                     conn.execute("INSERT OR IGNORE INTO suppression(email,reason,added_at) "
                                  "VALUES(?,?,?)", (email, "manual",
