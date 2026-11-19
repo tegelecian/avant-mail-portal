@@ -676,6 +676,14 @@ BOUNCE_SENDERS = ("mailer-daemon", "postmaster", "microsoftexchange")
 BOUNCE_SUBJECTS = ("undeliverable", "delivery has failed", "returned mail",
                    "delivery status notification", "mail delivery failed")
 
+# People rarely write "unsubscribe": Nov 2026 a recipient replied "Please remove me/us from your
+# email list", wasn't suppressed, and got the next campaign. Match the common ways of saying it.
+OPT_OUT_PHRASES = ("unsubscribe", "remove me", "remove us", "take me off", "take us off",
+                   "opt out", "opt-out", "stop emailing", "stop sending", "do not email",
+                   "don't email", "no more email", "off your list", "off your email list",
+                   "off your mailing list", "from your list", "from your email list",
+                   "from your mailing list")
+
 def apply_inbox_messages(conn, campaign_id, messages):
     """Match inbox messages to a campaign's recipients.
     Marks replies, auto-suppresses 'unsubscribe' replies, flags bounces.
@@ -716,7 +724,7 @@ def apply_inbox_messages(conn, campaign_id, messages):
                          (received, r["id"]))
             r["replied_at"] = received
             result["replied"] += 1
-        if "unsubscribe" in subject or "unsubscribe" in preview:
+        if any(p in subject or p in preview for p in OPT_OUT_PHRASES):
             cur = conn.execute("INSERT OR IGNORE INTO suppression(email,reason,added_at) "
                                "VALUES(?,?,?)", (sender, "asked by reply", now))
             if cur.rowcount:
